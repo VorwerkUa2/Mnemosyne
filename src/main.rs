@@ -203,6 +203,42 @@ struct CompanionInstallResult {
     result: Result<(), String>,
 }
 
+#[derive(Clone)]
+struct ClaudePlugin {
+    id: String,
+    name: String,
+    description: String,
+    marketplace: String,
+    installed: bool,
+    enabled: bool,
+    scope: String,
+}
+
+#[derive(Clone, Copy)]
+enum PluginAction {
+    Install,
+    Enable,
+    Disable,
+    Uninstall,
+}
+
+struct PluginManagerResult {
+    plugin_action: Option<(PluginAction, String)>,
+    marketplace_action: Option<(bool, String)>,
+    result: Result<PluginManagerSnapshot, String>,
+}
+
+struct PluginManagerSnapshot {
+    plugins: Vec<ClaudePlugin>,
+    marketplaces: Vec<ClaudeMarketplace>,
+}
+
+#[derive(Clone)]
+struct ClaudeMarketplace {
+    name: String,
+    source: String,
+}
+
 struct ProjectFileList {
     files: Vec<PathBuf>,
     truncated: bool,
@@ -240,8 +276,17 @@ struct MnemosyneApp {
     pending_chat_delete: Option<(String, String, String)>,
     pending_chat_clear: Option<(String, String, String)>,
     pending_file_approval: Option<FileChangeApproval>,
+    pending_plugin_action: Option<(PluginAction, String, String)>,
     pending_project_removal: Option<(String, String)>,
     show_settings: bool,
+    show_plugin_manager: bool,
+    plugin_filter: String,
+    plugins: Vec<ClaudePlugin>,
+    marketplaces: Vec<ClaudeMarketplace>,
+    marketplace_source: String,
+    pending_marketplace_action: Option<(bool, String, String)>,
+    loading_plugins: bool,
+    plugin_action_running: bool,
     freellmapi_key_draft: String,
     checking_provider: bool,
     installing_companion: bool,
@@ -263,6 +308,8 @@ struct MnemosyneApp {
     stream_rx: Receiver<ClaudeStreamChunk>,
     approval_tx: Sender<FileChangeApproval>,
     approval_rx: Receiver<FileChangeApproval>,
+    plugin_manager_tx: Sender<PluginManagerResult>,
+    plugin_manager_rx: Receiver<PluginManagerResult>,
     provider_check_tx: Sender<ProviderCheckResult>,
     provider_check_rx: Receiver<ProviderCheckResult>,
     companion_install_tx: Sender<CompanionInstallResult>,
@@ -274,6 +321,7 @@ impl MnemosyneApp {
         let (result_tx, result_rx) = mpsc::channel();
         let (stream_tx, stream_rx) = mpsc::channel();
         let (approval_tx, approval_rx) = mpsc::channel();
+        let (plugin_manager_tx, plugin_manager_rx) = mpsc::channel();
         let (provider_check_tx, provider_check_rx) = mpsc::channel();
         let (companion_install_tx, companion_install_rx) = mpsc::channel();
         let (state, load_error) = match load_state() {
@@ -291,8 +339,17 @@ impl MnemosyneApp {
             pending_chat_delete: None,
             pending_chat_clear: None,
             pending_file_approval: None,
+            pending_plugin_action: None,
             pending_project_removal: None,
             show_settings: false,
+            show_plugin_manager: false,
+            plugin_filter: String::new(),
+            plugins: Vec::new(),
+            marketplaces: Vec::new(),
+            marketplace_source: String::new(),
+            pending_marketplace_action: None,
+            loading_plugins: false,
+            plugin_action_running: false,
             freellmapi_key_draft: String::new(),
             checking_provider: false,
             installing_companion: false,
@@ -314,6 +371,8 @@ impl MnemosyneApp {
             stream_rx,
             approval_tx,
             approval_rx,
+            plugin_manager_tx,
+            plugin_manager_rx,
             provider_check_tx,
             provider_check_rx,
             companion_install_tx,
@@ -879,7 +938,110 @@ impl MnemosyneApp {
         });
     }
 
+    fn refresh_plugins(&mut self) {
+        if self.loading_plugins || self.plugin_action_running {
+            return;
+        }
+        self.loading_plugins = true;
+        self.status = Some("Завантажую список плагінів Claude Code…".to_owned());
+        let tx = self.plugin_manager_tx.clone();
+        thread::spawn(move || {
+            let result = load_plugin_manager_snapshot();
+            let _ = tx.send(PluginManagerResult {
+                plugin_action: None,
+                marketplace_action: None,
+                result,
+            });
+        });
+    }
+
+    fn run_plugin_action(&mut self, action: PluginAction, plugin_id: String) {
+        if self.plugin_action_running || !is_valid_plugin_id(&plugin_id) {
+            self.status = Some("Некоректний ідентифікатор плагіна.".to_owned());
+            return;
+        }
+        self.plugin_action_running = true;
+        self.status = Some("Виконую операцію з плагіном…".to_owned());
+        let tx = self.plugin_manager_tx.clone();
+        thread::spawn(move || {
+            let result = run_claude_plugin_action(action, &plugin_id)
+                .and_then(|_| load_plugin_manager_snapshot());
+            let _ = tx.send(PluginManagerResult {
+                plugin_action: Some((action, plugin_id)),
+                marketplace_action: None,
+                result,
+            });
+        });
+    }
+
+    fn run_marketplace_action(&mut self, add: bool, target: String) {
+        if self.plugin_action_running {
+            return;
+        }
+        self.plugin_action_running = true;
+        self.status = Some("Оновлюю marketplace Claude Code…".to_owned());
+        let tx = self.plugin_manager_tx.clone();
+        thread::spawn(move || {
+            let result = run_claude_marketplace_action(add, &target)
+                .and_then(|_| load_plugin_manager_snapshot());
+            let _ = tx.send(PluginManagerResult {
+                plugin_action: None,
+                marketplace_action: Some((add, target)),
+                result,
+            });
+        });
+    }
+
     fn receive_result(&mut self, ctx: &egui::Context) {
+        while let Ok(response) = self.plugin_manager_rx.try_recv() {
+            match (response.plugin_action, response.marketplace_action) {
+                (Some((action, plugin_id)), None) => {
+                    self.plugin_action_running = false;
+                    match response.result {
+                        Ok(snapshot) => {
+                            self.plugins = snapshot.plugins;
+                            self.marketplaces = snapshot.marketplaces;
+                            self.status = Some(plugin_action_success_message(action, &plugin_id));
+                        }
+                        Err(error) => self.status = Some(error),
+                    }
+                }
+                (None, Some((add, target))) => {
+                    self.plugin_action_running = false;
+                    match response.result {
+                        Ok(snapshot) => {
+                            self.plugins = snapshot.plugins;
+                            self.marketplaces = snapshot.marketplaces;
+                            self.status = Some(if add {
+                                format!("Marketplace {target} додано.")
+                            } else {
+                                format!("Marketplace {target} видалено.")
+                            });
+                        }
+                        Err(error) => self.status = Some(error),
+                    }
+                }
+                (None, None) => {
+                    self.loading_plugins = false;
+                    match response.result {
+                        Ok(snapshot) => {
+                            self.plugins = snapshot.plugins;
+                            self.marketplaces = snapshot.marketplaces;
+                            self.status = Some(format!(
+                                "Каталог плагінів оновлено: {} записів.",
+                                self.plugins.len()
+                            ));
+                        }
+                        Err(error) => self.status = Some(error),
+                    }
+                }
+                (Some(_), Some(_)) => {
+                    self.plugin_action_running = false;
+                    self.status = Some("Некоректна відповідь операції з marketplace.".to_owned());
+                }
+            }
+            ctx.request_repaint();
+        }
         while let Ok(approval) = self.approval_rx.try_recv() {
             if self.pending_file_approval.is_none() {
                 self.pending_file_approval = Some(approval);
@@ -982,6 +1144,9 @@ impl MnemosyneApp {
         if self.installing_companion {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
+        if self.loading_plugins || self.plugin_action_running {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
     }
 }
 
@@ -999,6 +1164,12 @@ impl eframe::App for MnemosyneApp {
                 ui.label("Твій простір для вайбкодингу");
                 if ui.button("⚙ Налаштування AI").clicked() {
                     self.show_settings = true;
+                }
+                if ui.button("🔌 Плагіни Claude Code").clicked() {
+                    self.show_plugin_manager = true;
+                    if self.plugins.is_empty() {
+                        self.refresh_plugins();
+                    }
                 }
                 ui.add_space(16.0);
 
@@ -1585,6 +1756,280 @@ impl eframe::App for MnemosyneApp {
                 self.remove_project_from_workspace(&project_id);
             } else if dismiss || !open {
                 self.pending_project_removal = None;
+            }
+        }
+
+        if self.show_plugin_manager {
+            let mut open = self.show_plugin_manager;
+            let mut refresh = false;
+            let mut requested_action = None;
+            let mut requested_marketplace_action = None;
+            let mut marketplace_error = None;
+            egui::Window::new("Плагіни Claude Code")
+                .open(&mut open)
+                .default_size([760.0, 620.0])
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                !self.loading_plugins && !self.plugin_action_running,
+                                egui::Button::new("Перечитати каталог"),
+                            )
+                            .clicked()
+                        {
+                            refresh = true;
+                        }
+                        if self.loading_plugins {
+                            ui.spinner();
+                            ui.label("Завантажую каталог…");
+                        } else if self.plugin_action_running {
+                            ui.spinner();
+                            ui.label("Виконую операцію…");
+                        }
+                    });
+                    ui.collapsing("Marketplace-джерела", |ui| {
+                        for marketplace in self.marketplaces.clone() {
+                            ui.horizontal(|ui| {
+                                ui.label(&marketplace.name);
+                                ui.weak(&marketplace.source);
+                                if ui
+                                    .add_enabled(
+                                        !self.plugin_action_running,
+                                        egui::Button::new("Видалити"),
+                                    )
+                                    .clicked()
+                                {
+                                    requested_marketplace_action = Some((
+                                        false,
+                                        marketplace.name.clone(),
+                                        marketplace.name,
+                                    ));
+                                }
+                            });
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.marketplace_source)
+                                    .desired_width(300.0)
+                                    .hint_text("owner/repo або GitHub URL"),
+                            );
+                            if ui
+                                .add_enabled(
+                                    !self.plugin_action_running,
+                                    egui::Button::new("Додати marketplace"),
+                                )
+                                .clicked()
+                            {
+                                match normalize_marketplace_source(&self.marketplace_source) {
+                                    Ok(source) => {
+                                        requested_marketplace_action = Some((
+                                            true,
+                                            source.clone(),
+                                            source,
+                                        ));
+                                    }
+                                    Err(error) => marketplace_error = Some(error),
+                                }
+                            }
+                        });
+                        if let Some(error) = &marketplace_error {
+                            ui.colored_label(egui::Color32::LIGHT_RED, error);
+                        }
+                    });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.plugin_filter)
+                            .hint_text("Пошук за назвою, описом або marketplace"),
+                    );
+                    ui.separator();
+                    let filter = self.plugin_filter.trim().to_ascii_lowercase();
+                    let plugins = self.plugins.clone();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let mut visible = 0;
+                        for plugin in plugins {
+                            if !filter.is_empty()
+                                && !plugin.name.to_ascii_lowercase().contains(&filter)
+                                && !plugin.description.to_ascii_lowercase().contains(&filter)
+                                && !plugin.marketplace.to_ascii_lowercase().contains(&filter)
+                            {
+                                continue;
+                            }
+                            visible += 1;
+                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.strong(&plugin.name);
+                                    if plugin.installed {
+                                        ui.weak(if plugin.enabled { "Встановлено" } else { "Вимкнено" });
+                                    }
+                                    ui.weak(format!("@{}", plugin.marketplace));
+                                });
+                                if !plugin.description.is_empty() {
+                                    ui.label(&plugin.description);
+                                }
+                                if plugin.installed && plugin.scope != "user" {
+                                    ui.weak(format!(
+                                        "Встановлено в області «{}»; змінювати його можна з відповідного проєкту.",
+                                        plugin.scope
+                                    ));
+                                } else {
+                                    ui.horizontal(|ui| {
+                                        if !plugin.installed {
+                                            if ui
+                                                .add_enabled(
+                                                    !self.plugin_action_running,
+                                                    egui::Button::new("Встановити"),
+                                                )
+                                                .clicked()
+                                            {
+                                                requested_action = Some((
+                                                    PluginAction::Install,
+                                                    plugin.id.clone(),
+                                                    plugin.name.clone(),
+                                                ));
+                                            }
+                                        } else {
+                                            let (action, label) = if plugin.enabled {
+                                                (PluginAction::Disable, "Вимкнути")
+                                            } else {
+                                                (PluginAction::Enable, "Увімкнути")
+                                            };
+                                            if ui
+                                                .add_enabled(
+                                                    !self.plugin_action_running,
+                                                    egui::Button::new(label),
+                                                )
+                                                .clicked()
+                                            {
+                                                requested_action = Some((
+                                                    action,
+                                                    plugin.id.clone(),
+                                                    plugin.name.clone(),
+                                                ));
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    !self.plugin_action_running,
+                                                    egui::Button::new("Видалити"),
+                                                )
+                                                .clicked()
+                                            {
+                                                requested_action = Some((
+                                                    PluginAction::Uninstall,
+                                                    plugin.id.clone(),
+                                                    plugin.name.clone(),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            ui.add_space(4.0);
+                        }
+                        if visible == 0 && !self.loading_plugins {
+                            ui.weak("Немає плагінів, що відповідають пошуку.");
+                        }
+                    });
+                    ui.separator();
+                    ui.weak("Каталог і команди керування надає встановлений Claude Code CLI. Встановлюй лише плагіни з джерел, яким довіряєш.");
+                });
+            self.show_plugin_manager = open;
+            if refresh {
+                self.refresh_plugins();
+            }
+            if let Some((action, plugin_id, name)) = requested_action {
+                match action {
+                    PluginAction::Install | PluginAction::Uninstall => {
+                        self.pending_plugin_action = Some((action, plugin_id, name));
+                    }
+                    PluginAction::Enable | PluginAction::Disable => {
+                        self.run_plugin_action(action, plugin_id);
+                    }
+                }
+                if let Some((add, target, label)) = requested_marketplace_action {
+                    self.pending_marketplace_action = Some((add, target, label));
+                }
+            }
+        }
+
+        if let Some((action, plugin_id, name)) = self.pending_plugin_action.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut dismiss = false;
+            let title = match action {
+                PluginAction::Install => "Встановити плагін?",
+                PluginAction::Uninstall => "Видалити плагін?",
+                PluginAction::Enable | PluginAction::Disable => "Змінити стан плагіна?",
+            };
+            egui::Window::new(title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(match action {
+                        PluginAction::Install => format!(
+                            "Встановити «{name}» ({plugin_id}) для користувача? Плагін може додавати інструменти й запускати власний код. Продовжуй лише якщо довіряєш marketplace."
+                        ),
+                        PluginAction::Uninstall => format!(
+                            "Видалити «{name}» ({plugin_id})? Збережені дані плагіна буде залишено."
+                        ),
+                        PluginAction::Enable | PluginAction::Disable => name.clone(),
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Підтвердити").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Скасувати").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if confirm {
+                self.pending_plugin_action = None;
+                self.run_plugin_action(action, plugin_id);
+            } else if dismiss || !open {
+                self.pending_plugin_action = None;
+            }
+        }
+
+        if let Some((add, target, label)) = self.pending_marketplace_action.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut dismiss = false;
+            egui::Window::new(if add {
+                "Додати marketplace?"
+            } else {
+                "Видалити marketplace?"
+            })
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(if add {
+                    format!(
+                        "Додати GitHub-джерело {label}? Marketplace надає плагіни з виконуваним кодом. Додавай лише джерела, яким довіряєш."
+                    )
+                } else {
+                    format!(
+                        "Видалити marketplace «{label}»? Це може зробити його плагіни недоступними для оновлення."
+                    )
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(if add { "Додати" } else { "Видалити" }).clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Скасувати").clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+            if confirm {
+                self.pending_marketplace_action = None;
+                if add {
+                    self.marketplace_source.clear();
+                }
+                self.run_marketplace_action(add, target);
+            } else if dismiss || !open {
+                self.pending_marketplace_action = None;
             }
         }
 
@@ -3451,6 +3896,290 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn is_valid_plugin_id(plugin_id: &str) -> bool {
+    !plugin_id.is_empty()
+        && plugin_id.len() <= 240
+        && plugin_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@'))
+}
+
+fn plugin_string<'a>(plugin: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| plugin.get(*key).and_then(serde_json::Value::as_str))
+}
+
+fn normalize_plugin_id(plugin: &serde_json::Value) -> Option<String> {
+    let id = plugin_string(plugin, &["pluginId", "id"])?;
+    if id.contains('@') {
+        return is_valid_plugin_id(id).then(|| id.to_owned());
+    }
+    let marketplace = plugin_string(plugin, &["marketplaceName", "marketplace"])?;
+    let full_id = format!("{id}@{marketplace}");
+    is_valid_plugin_id(&full_id).then_some(full_id)
+}
+
+fn parse_plugin_catalog(body: &serde_json::Value) -> Result<Vec<ClaudePlugin>, String> {
+    let installed = body
+        .get("installed")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            "Claude Code повернув каталог без списку встановлених плагінів.".to_owned()
+        })?;
+    let available = body
+        .get("available")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut plugins = Vec::new();
+    for (entries, is_installed) in [(installed.as_slice(), true), (available.as_slice(), false)] {
+        for plugin in entries {
+            let Some(id) = normalize_plugin_id(plugin) else {
+                continue;
+            };
+            let name = plugin_string(plugin, &["name"])
+                .unwrap_or_else(|| id.split('@').next().unwrap_or(&id))
+                .to_owned();
+            let marketplace = plugin_string(plugin, &["marketplaceName", "marketplace"])
+                .or_else(|| id.split_once('@').map(|(_, marketplace)| marketplace))
+                .unwrap_or("unknown")
+                .to_owned();
+            let scope = plugin_string(plugin, &["scope"])
+                .unwrap_or("user")
+                .to_owned();
+            let enabled = plugin
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(is_installed);
+            if let Some(existing) = plugins
+                .iter_mut()
+                .find(|existing: &&mut ClaudePlugin| existing.id == id)
+            {
+                existing.installed |= is_installed;
+                if is_installed {
+                    existing.enabled = enabled;
+                    existing.scope = scope;
+                }
+                if existing.description.is_empty() {
+                    existing.description = plugin_string(plugin, &["description"])
+                        .unwrap_or_default()
+                        .to_owned();
+                }
+                continue;
+            }
+            plugins.push(ClaudePlugin {
+                id,
+                name,
+                description: plugin_string(plugin, &["description"])
+                    .unwrap_or_default()
+                    .to_owned(),
+                marketplace,
+                installed: is_installed,
+                enabled,
+                scope,
+            });
+        }
+    }
+    plugins.sort_by_key(|plugin| plugin.name.to_ascii_lowercase());
+    Ok(plugins)
+}
+
+fn load_claude_plugins() -> Result<Vec<ClaudePlugin>, String> {
+    let output = claude_command()
+        .args(["plugin", "list", "--json", "--available"])
+        .output()
+        .map_err(|error| {
+            format!("Не вдалося запустити Claude Code для списку плагінів: {error}")
+        })?;
+    if !output.status.success() {
+        return Err(format_claude_cli_error(
+            "Не вдалося отримати список плагінів Claude Code.",
+            &output.stderr,
+        ));
+    }
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Claude Code повернув некоректний каталог плагінів: {error}"))?;
+    parse_plugin_catalog(&body)
+}
+
+fn parse_marketplaces(body: &serde_json::Value) -> Result<Vec<ClaudeMarketplace>, String> {
+    let entries = body
+        .as_array()
+        .or_else(|| {
+            body.get("marketplaces")
+                .and_then(serde_json::Value::as_array)
+        })
+        .ok_or_else(|| "Claude Code повернув некоректний список marketplace.".to_owned())?;
+    let mut marketplaces: Vec<ClaudeMarketplace> = entries
+        .iter()
+        .filter_map(|entry| {
+            let name = plugin_string(entry, &["name"])?;
+            if !is_valid_marketplace_name(name) {
+                return None;
+            }
+            let source = plugin_string(entry, &["repo", "source"]).unwrap_or("невідоме джерело");
+            Some(ClaudeMarketplace {
+                name: name.to_owned(),
+                source: source.to_owned(),
+            })
+        })
+        .collect();
+    marketplaces.sort_by_key(|marketplace| marketplace.name.to_ascii_lowercase());
+    Ok(marketplaces)
+}
+
+fn is_valid_marketplace_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 120
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn normalize_marketplace_source(source: &str) -> Result<String, String> {
+    let source = source.trim();
+    let repo = if source.contains("://") {
+        let url = reqwest::Url::parse(source)
+            .map_err(|error| format!("Некоректна адреса marketplace: {error}"))?;
+        if url.scheme() != "https"
+            || url.host_str() != Some("github.com")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(
+                "Marketplace має бути GitHub-репозиторієм за HTTPS без облікових даних.".to_owned(),
+            );
+        }
+        url.path().trim_matches('/').to_owned()
+    } else {
+        source.to_owned()
+    };
+    let repo = repo.strip_suffix(".git").unwrap_or(&repo);
+    let parts: Vec<_> = repo.split('/').collect();
+    if parts.len() != 2
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || *part == "." || *part == "..")
+        || !parts.iter().all(|part| {
+            part.bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+    {
+        return Err(
+            "Вкажи GitHub-репозиторій у форматі owner/repo або https://github.com/owner/repo."
+                .to_owned(),
+        );
+    }
+    Ok(format!("{}/{}", parts[0], parts[1]))
+}
+
+fn load_plugin_manager_snapshot() -> Result<PluginManagerSnapshot, String> {
+    let plugins = load_claude_plugins()?;
+    let output = claude_command()
+        .args(["plugin", "marketplace", "list", "--json"])
+        .output()
+        .map_err(|error| {
+            format!("Не вдалося запустити Claude Code для списку marketplace: {error}")
+        })?;
+    if !output.status.success() {
+        return Err(format_claude_cli_error(
+            "Не вдалося отримати список marketplace Claude Code.",
+            &output.stderr,
+        ));
+    }
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Claude Code повернув некоректний список marketplace: {error}"))?;
+    Ok(PluginManagerSnapshot {
+        plugins,
+        marketplaces: parse_marketplaces(&body)?,
+    })
+}
+
+fn run_claude_plugin_action(action: PluginAction, plugin_id: &str) -> Result<(), String> {
+    if !is_valid_plugin_id(plugin_id) {
+        return Err("Некоректний ідентифікатор плагіна.".to_owned());
+    }
+    let action_name = match action {
+        PluginAction::Install => "install",
+        PluginAction::Enable => "enable",
+        PluginAction::Disable => "disable",
+        PluginAction::Uninstall => "uninstall",
+    };
+    let output = claude_command()
+        .args(["plugin", action_name, plugin_id, "--scope", "user"])
+        .args(if matches!(action, PluginAction::Uninstall) {
+            vec!["--keep-data"]
+        } else {
+            Vec::new()
+        })
+        .output()
+        .map_err(|error| format!("Не вдалося запустити операцію плагіна: {error}"))?;
+    if !output.status.success() {
+        return Err(format_claude_cli_error(
+            "Claude Code не зміг виконати операцію з плагіном.",
+            &output.stderr,
+        ));
+    }
+    Ok(())
+}
+
+fn run_claude_marketplace_action(add: bool, target: &str) -> Result<(), String> {
+    let args = if add {
+        let source = normalize_marketplace_source(target)?;
+        vec![
+            "plugin".to_owned(),
+            "marketplace".to_owned(),
+            "add".to_owned(),
+            "--scope".to_owned(),
+            "user".to_owned(),
+            source,
+        ]
+    } else {
+        if !is_valid_marketplace_name(target) {
+            return Err("Некоректна назва marketplace.".to_owned());
+        }
+        vec![
+            "plugin".to_owned(),
+            "marketplace".to_owned(),
+            "remove".to_owned(),
+            target.to_owned(),
+        ]
+    };
+    let output = claude_command()
+        .args(args)
+        .output()
+        .map_err(|error| format!("Не вдалося запустити операцію marketplace: {error}"))?;
+    if !output.status.success() {
+        return Err(format_claude_cli_error(
+            "Claude Code не зміг виконати операцію marketplace.",
+            &output.stderr,
+        ));
+    }
+    Ok(())
+}
+
+fn format_claude_cli_error(prefix: &str, stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr);
+    if detail.trim().is_empty() {
+        prefix.to_owned()
+    } else {
+        format!("{prefix} {}", detail.trim())
+    }
+}
+
+fn plugin_action_success_message(action: PluginAction, plugin_id: &str) -> String {
+    match action {
+        PluginAction::Install => {
+            format!("Плагін {plugin_id} встановлено для наступних сесій Claude Code.")
+        }
+        PluginAction::Enable => format!("Плагін {plugin_id} увімкнено."),
+        PluginAction::Disable => format!("Плагін {plugin_id} вимкнено."),
+        PluginAction::Uninstall => format!("Плагін {plugin_id} видалено; його дані збережено."),
+    }
+}
+
 fn install_official_freellmapi() -> Result<(), String> {
     let (expected_prefix, expected_suffix) = current_platform_asset()?;
     let client = reqwest::blocking::Client::builder()
@@ -3723,6 +4452,89 @@ mod tests {
     fn reports_empty_or_unknown_model_catalogs() {
         assert!(parse_ready_models(&serde_json::json!({"data": []})).is_err());
         assert!(parse_ready_models(&serde_json::json!({"models": []})).is_err());
+    }
+
+    #[test]
+    fn parses_and_merges_plugin_catalog_without_losing_installed_state() {
+        let plugins = parse_plugin_catalog(&serde_json::json!({
+            "installed": [{
+                "pluginId": "review@official",
+                "name": "review",
+                "description": "",
+                "enabled": true,
+                "scope": "project"
+            }],
+            "available": [
+                {
+                    "pluginId": "review@official",
+                    "name": "review",
+                    "description": "Code review",
+                    "marketplaceName": "official"
+                },
+                {
+                    "pluginId": "format@official",
+                    "name": "format",
+                    "description": "Formatting",
+                    "marketplaceName": "official"
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(plugins.len(), 2);
+        let review = plugins
+            .iter()
+            .find(|plugin| plugin.id == "review@official")
+            .unwrap();
+        assert!(review.installed);
+        assert!(review.enabled);
+        assert_eq!(review.scope, "project");
+        assert_eq!(review.description, "Code review");
+        let formatter = plugins
+            .iter()
+            .find(|plugin| plugin.id == "format@official")
+            .unwrap();
+        assert!(!formatter.installed);
+        assert!(!formatter.enabled);
+    }
+
+    #[test]
+    fn plugin_ids_reject_shell_metacharacters() {
+        assert!(is_valid_plugin_id("review@official-marketplace"));
+        assert!(!is_valid_plugin_id("review@official&whoami"));
+        assert!(!is_valid_plugin_id(""));
+    }
+
+    #[test]
+    fn marketplace_sources_are_restricted_to_github_repositories() {
+        assert_eq!(
+            normalize_marketplace_source(" anthropics/claude-plugins-official ").unwrap(),
+            "anthropics/claude-plugins-official"
+        );
+        assert_eq!(
+            normalize_marketplace_source("https://github.com/example/plugins.git").unwrap(),
+            "example/plugins"
+        );
+        assert!(normalize_marketplace_source("http://github.com/example/plugins").is_err());
+        assert!(
+            normalize_marketplace_source("https://user:pass@github.com/example/plugins").is_err()
+        );
+        assert!(normalize_marketplace_source("example/plugins&whoami").is_err());
+        assert!(
+            normalize_marketplace_source("https://github.com/example/plugins/tree/main").is_err()
+        );
+    }
+
+    #[test]
+    fn parses_marketplace_list_and_ignores_invalid_names() {
+        let marketplaces = parse_marketplaces(&serde_json::json!([
+            {"name": "official", "source": "github", "repo": "anthropics/claude-plugins-official"},
+            {"name": "unsafe&name", "source": "github", "repo": "attacker/repo"}
+        ]))
+        .unwrap();
+        assert_eq!(marketplaces.len(), 1);
+        assert_eq!(marketplaces[0].name, "official");
+        assert_eq!(marketplaces[0].source, "anthropics/claude-plugins-official");
     }
 
     #[test]
@@ -4039,6 +4851,9 @@ mod tests {
             assert!(
                 project_relative_write_path(&project, "escape/new.rs", Some(&project)).is_err()
             );
+            #[cfg(unix)]
+            fs::remove_file(&link).unwrap();
+            #[cfg(windows)]
             fs::remove_dir(&link).unwrap();
         }
         fs::remove_dir_all(root).unwrap();
