@@ -1,15 +1,22 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc::{self, Receiver, Sender},
-    thread,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex,
+    },
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
 use chrono::{DateTime, Local};
+use command_group::{CommandGroup, GroupChild};
 use eframe::egui;
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -22,6 +29,14 @@ const FREELLMAPI_RELEASES_API: &str =
 const MAX_ATTACHMENT_BYTES: u64 = 512 * 1024;
 const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_ATTACHMENT_CHARS: usize = 40_000;
+const MAX_PROJECT_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_PROJECT_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_PROJECT_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
+const MAX_PROJECT_IMAGE_DIMENSION: u32 = 8192;
+const MAX_PROJECT_FILES: usize = 2000;
+const MAX_PROJECT_SCAN_DEPTH: usize = 6;
+const MAX_APPROVAL_HOOK_BYTES: usize = 16 * 1024 * 1024;
+const MAX_APPROVAL_RESPONSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,6 +46,8 @@ struct AppState {
     selected_chat: Option<String>,
     freellmapi: FreeLlmApiSettings,
     agent_mode: AgentMode,
+    claude_model: ClaudeModel,
+    context_limit: ConversationContextLimit,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -87,10 +104,94 @@ enum AgentMode {
     Turbo,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+enum ClaudeModel {
+    #[default]
+    Sonnet,
+    Opus,
+    Haiku,
+}
+
+impl ClaudeModel {
+    fn cli_alias(self) -> &'static str {
+        match self {
+            Self::Sonnet => "sonnet",
+            Self::Opus => "opus",
+            Self::Haiku => "haiku",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Sonnet => "Sonnet",
+            Self::Opus => "Opus",
+            Self::Haiku => "Haiku",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+enum ConversationContextLimit {
+    Last5Turns,
+    Last10Turns,
+    #[default]
+    Last20Turns,
+    Last40Turns,
+    All,
+}
+
+impl ConversationContextLimit {
+    fn user_turns(self) -> Option<usize> {
+        match self {
+            Self::Last5Turns => Some(5),
+            Self::Last10Turns => Some(10),
+            Self::Last20Turns => Some(20),
+            Self::Last40Turns => Some(40),
+            Self::All => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Last5Turns => "5 останніх запитів",
+            Self::Last10Turns => "10 останніх запитів",
+            Self::Last20Turns => "20 останніх запитів",
+            Self::Last40Turns => "40 останніх запитів",
+            Self::All => "Уся історія",
+        }
+    }
+}
+
 struct ClaudeResult {
     project_id: String,
     chat_id: String,
     result: Result<String, String>,
+    cancelled: bool,
+}
+
+struct ClaudeStreamChunk {
+    project_id: String,
+    chat_id: String,
+    update: ClaudeStreamUpdate,
+}
+
+enum ClaudeStreamUpdate {
+    Text(String),
+    Tool(String),
+}
+
+struct FileChangeApproval {
+    tool: String,
+    path: String,
+    preview: String,
+    response_tx: Sender<bool>,
+}
+
+struct ApprovalServer {
+    address: SocketAddr,
+    token: String,
+    running: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
 }
 
 struct ProviderCheckResult {
@@ -102,20 +203,66 @@ struct CompanionInstallResult {
     result: Result<(), String>,
 }
 
+struct ProjectFileList {
+    files: Vec<PathBuf>,
+    truncated: bool,
+}
+
+struct OpenProjectFile {
+    project_id: String,
+    relative_path: PathBuf,
+    content: String,
+    markdown_preview: bool,
+    dirty: bool,
+    image: Option<LoadedProjectImage>,
+}
+
+struct LoadedProjectImage {
+    texture: egui::TextureHandle,
+    width: usize,
+    height: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ProjectDocumentKind {
+    Plan,
+    Report,
+}
+
 struct MnemosyneApp {
     state: AppState,
     draft: String,
     pending_attachments: Vec<PathBuf>,
     new_project_name: String,
     creating_project: bool,
+    editing_chat: Option<String>,
+    chat_title_draft: String,
+    pending_chat_delete: Option<(String, String, String)>,
+    pending_chat_clear: Option<(String, String, String)>,
+    pending_file_approval: Option<FileChangeApproval>,
+    pending_project_removal: Option<(String, String)>,
     show_settings: bool,
     freellmapi_key_draft: String,
     checking_provider: bool,
     installing_companion: bool,
+    show_project_files: bool,
+    project_files: Vec<PathBuf>,
+    project_files_truncated: bool,
+    project_file_filter: String,
+    open_project_file: Option<OpenProjectFile>,
     busy: bool,
+    streaming_content: String,
+    current_tool: Option<String>,
+    active_request: Option<(String, String)>,
+    active_child: Arc<Mutex<Option<GroupChild>>>,
+    cancel_requested: Arc<AtomicBool>,
     status: Option<String>,
     result_tx: Sender<ClaudeResult>,
     result_rx: Receiver<ClaudeResult>,
+    stream_tx: Sender<ClaudeStreamChunk>,
+    stream_rx: Receiver<ClaudeStreamChunk>,
+    approval_tx: Sender<FileChangeApproval>,
+    approval_rx: Receiver<FileChangeApproval>,
     provider_check_tx: Sender<ProviderCheckResult>,
     provider_check_rx: Receiver<ProviderCheckResult>,
     companion_install_tx: Sender<CompanionInstallResult>,
@@ -125,6 +272,8 @@ struct MnemosyneApp {
 impl MnemosyneApp {
     fn new() -> Self {
         let (result_tx, result_rx) = mpsc::channel();
+        let (stream_tx, stream_rx) = mpsc::channel();
+        let (approval_tx, approval_rx) = mpsc::channel();
         let (provider_check_tx, provider_check_rx) = mpsc::channel();
         let (companion_install_tx, companion_install_rx) = mpsc::channel();
         let (state, load_error) = match load_state() {
@@ -137,14 +286,34 @@ impl MnemosyneApp {
             pending_attachments: Vec::new(),
             new_project_name: String::new(),
             creating_project: false,
+            editing_chat: None,
+            chat_title_draft: String::new(),
+            pending_chat_delete: None,
+            pending_chat_clear: None,
+            pending_file_approval: None,
+            pending_project_removal: None,
             show_settings: false,
             freellmapi_key_draft: String::new(),
             checking_provider: false,
             installing_companion: false,
+            show_project_files: false,
+            project_files: Vec::new(),
+            project_files_truncated: false,
+            project_file_filter: String::new(),
+            open_project_file: None,
             busy: false,
+            streaming_content: String::new(),
+            current_tool: None,
+            active_request: None,
+            active_child: Arc::new(Mutex::new(None)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
             status: load_error,
             result_tx,
             result_rx,
+            stream_tx,
+            stream_rx,
+            approval_tx,
+            approval_rx,
             provider_check_tx,
             provider_check_rx,
             companion_install_tx,
@@ -173,6 +342,137 @@ impl MnemosyneApp {
             .find(|chat| Some(chat.id.as_str()) == self.state.selected_chat.as_deref())
     }
 
+    fn refresh_project_files(&mut self) {
+        let Some(project) = self
+            .selected_project()
+            .map(|project| (project.id.clone(), project.path.clone()))
+        else {
+            self.project_files.clear();
+            self.project_files_truncated = false;
+            self.open_project_file = None;
+            return;
+        };
+        match list_project_files(&project.1) {
+            Ok(list) => {
+                self.project_files = list.files;
+                self.project_files_truncated = list.truncated;
+                self.status = None;
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    fn open_project_file(&mut self, relative_path: &Path, ctx: &egui::Context) {
+        let Some((project_id, project_root)) = self
+            .selected_project()
+            .map(|project| (project.id.clone(), project.path.clone()))
+        else {
+            return;
+        };
+        if is_supported_project_pdf_file(relative_path) {
+            let result = canonical_project_file(&project_root, relative_path).and_then(|path| {
+                open::that(path).map_err(|error| {
+                    format!("Не вдалося відкрити PDF у системному переглядачі: {error}")
+                })
+            });
+            self.status = Some(match result {
+                Ok(()) => format!(
+                    "PDF відкрито у системному переглядачі: {}",
+                    relative_path.display()
+                ),
+                Err(error) => error,
+            });
+            return;
+        }
+        if let Some(file) = self.open_project_file.as_ref().filter(|file| file.dirty) {
+            if file.project_id == project_id && file.relative_path == relative_path {
+                return;
+            }
+            self.status = Some("Спершу збережи зміни у відкритому файлі.".to_owned());
+            return;
+        }
+        let opened_file = if is_supported_project_image_file(relative_path) {
+            read_project_image_file(&project_root, relative_path).map(
+                |(color_image, width, height)| {
+                    let texture = ctx.load_texture(
+                        format!("project-image-{project_id}-{}", relative_path.display()),
+                        color_image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    OpenProjectFile {
+                        project_id: project_id.clone(),
+                        relative_path: relative_path.to_owned(),
+                        content: String::new(),
+                        markdown_preview: true,
+                        dirty: false,
+                        image: Some(LoadedProjectImage {
+                            texture,
+                            width: width as usize,
+                            height: height as usize,
+                        }),
+                    }
+                },
+            )
+        } else {
+            read_project_text_file(&project_root, relative_path).map(|content| OpenProjectFile {
+                project_id,
+                relative_path: relative_path.to_owned(),
+                content,
+                markdown_preview: relative_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md")),
+                dirty: false,
+                image: None,
+            })
+        };
+        match opened_file {
+            Ok(file) => {
+                self.open_project_file = Some(file);
+                self.status = None;
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    fn save_open_project_file(&mut self) {
+        let Some(file) = self.open_project_file.as_mut() else {
+            return;
+        };
+        let Some(project_root) = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.id == file.project_id)
+            .map(|project| project.path.clone())
+        else {
+            self.status = Some("Проєкт відкритого файлу більше не існує.".to_owned());
+            return;
+        };
+        match save_project_text_file(&project_root, &file.relative_path, &file.content) {
+            Ok(()) => {
+                file.dirty = false;
+                self.status = Some("Файл збережено.".to_owned());
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    fn has_unsaved_project_file(&self) -> bool {
+        self.open_project_file
+            .as_ref()
+            .is_some_and(|file| file.dirty)
+    }
+
+    fn refuse_project_change_with_unsaved_file(&mut self) -> bool {
+        if self.has_unsaved_project_file() {
+            self.status = Some("Спершу збережи зміни у відкритому файлі.".to_owned());
+            true
+        } else {
+            false
+        }
+    }
+
     fn create_chat(&mut self) {
         let Some(project_id) = self.state.selected_project.clone() else {
             return;
@@ -194,7 +494,149 @@ impl MnemosyneApp {
         self.save();
     }
 
+    fn rename_chat(&mut self, project_id: &str, chat_id: &str, title: &str) {
+        let title = match normalize_chat_title(title) {
+            Ok(title) => title,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        let Some(chat) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .and_then(|project| project.chats.iter_mut().find(|chat| chat.id == chat_id))
+        else {
+            self.status = Some("Чат для перейменування більше не існує.".to_owned());
+            return;
+        };
+        chat.title = title;
+        self.editing_chat = None;
+        self.chat_title_draft.clear();
+        self.save();
+    }
+
+    fn delete_chat(&mut self, project_id: &str, chat_id: &str) {
+        if self.busy {
+            self.status =
+                Some("Дочекайся завершення або скасуй запит перед видаленням чату.".to_owned());
+            return;
+        }
+        let selected_project = self.state.selected_project.as_deref() == Some(project_id);
+        let was_selected = selected_project && self.state.selected_chat.as_deref() == Some(chat_id);
+        let Some(project) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            self.status = Some("Проєкт чату більше не існує.".to_owned());
+            return;
+        };
+        if !remove_chat_from_project(project, chat_id) {
+            self.status = Some("Чат для видалення більше не існує.".to_owned());
+            return;
+        }
+        if was_selected {
+            self.state.selected_chat = project.chats.first().map(|chat| chat.id.clone());
+        }
+        if self.editing_chat.as_deref() == Some(chat_id) {
+            self.editing_chat = None;
+            self.chat_title_draft.clear();
+        }
+        self.pending_chat_delete = None;
+        self.save();
+    }
+
+    fn clear_chat_history(&mut self, project_id: &str, chat_id: &str) {
+        if self.busy {
+            self.status =
+                Some("Дочекайся завершення або скасуй запит перед очищенням історії.".to_owned());
+            return;
+        }
+        let Some(project) = self
+            .state
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            self.status = Some("Чат для очищення більше не існує.".to_owned());
+            return;
+        };
+        if !clear_chat_messages(project, chat_id) {
+            self.status = Some("Чат для очищення більше не існує.".to_owned());
+            return;
+        }
+        self.pending_chat_clear = None;
+        self.save();
+    }
+
+    fn export_chat(&mut self, project_id: &str, chat_id: &str) {
+        let Some(chat) = self
+            .state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .and_then(|project| project.chats.iter().find(|chat| chat.id == chat_id))
+        else {
+            self.status = Some("Чат для експорту більше не існує.".to_owned());
+            return;
+        };
+        let markdown = chat_export_markdown(chat);
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name("mnemosyne-chat.md")
+            .add_filter("Markdown", &["md"])
+            .save_file()
+        else {
+            return;
+        };
+        match fs::write(&path, markdown) {
+            Ok(()) => {
+                self.status = Some(format!("Історію чату експортовано у {}.", path.display()))
+            }
+            Err(error) => {
+                self.status = Some(format!("Не вдалося експортувати історію чату: {error}"))
+            }
+        }
+    }
+
+    fn remove_project_from_workspace(&mut self, project_id: &str) {
+        if self.busy {
+            self.status =
+                Some("Дочекайся завершення або скасуй запит перед прибиранням проєкту.".to_owned());
+            return;
+        }
+        if self
+            .open_project_file
+            .as_ref()
+            .is_some_and(|file| file.project_id == project_id && file.dirty)
+        {
+            self.status = Some("Спершу збережи зміни у відкритому файлі.".to_owned());
+            return;
+        }
+        let selected = self.state.selected_project.as_deref() == Some(project_id);
+        if !remove_project_record(&mut self.state, project_id) {
+            self.status = Some("Проєкт для прибирання більше не існує.".to_owned());
+            return;
+        }
+        if selected {
+            self.open_project_file = None;
+            self.project_files.clear();
+            self.project_files_truncated = false;
+        }
+        self.pending_project_removal = None;
+        self.save();
+        if selected && self.show_project_files {
+            self.refresh_project_files();
+        }
+    }
+
     fn add_project(&mut self, path: PathBuf) {
+        if self.refuse_project_change_with_unsaved_file() {
+            return;
+        }
         if self
             .state
             .projects
@@ -217,11 +659,16 @@ impl MnemosyneApp {
         };
         self.state.selected_project = Some(project.id.clone());
         self.state.selected_chat = None;
+        self.open_project_file = None;
+        self.project_files.clear();
         self.state.projects.insert(0, project);
         self.save();
     }
 
     fn create_project_folder(&mut self) {
+        if self.refuse_project_change_with_unsaved_file() {
+            return;
+        }
         let name = self.new_project_name.trim();
         let mut components = Path::new(name).components();
         if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
@@ -317,14 +764,23 @@ impl MnemosyneApp {
         }
         chat.messages.push(message);
         let project_path = project.path.clone();
-        let conversation = chat.messages.clone();
+        let conversation = conversation_context(&chat.messages, self.state.context_limit).to_vec();
         let api_base_url = self.state.freellmapi.base_url.clone();
         self.draft.clear();
         self.busy = true;
+        self.streaming_content.clear();
+        self.current_tool = None;
+        self.active_request = Some((project_id.clone(), chat_id.clone()));
+        self.cancel_requested = Arc::new(AtomicBool::new(false));
         self.save();
 
         let agent_mode = self.state.agent_mode;
+        let model = self.state.claude_model;
         let tx = self.result_tx.clone();
+        let stream_tx = self.stream_tx.clone();
+        let approval_tx = self.approval_tx.clone();
+        let active_child = Arc::clone(&self.active_child);
+        let cancel_requested = Arc::clone(&self.cancel_requested);
         thread::spawn(move || {
             let result = run_claude(
                 &project_path,
@@ -332,13 +788,39 @@ impl MnemosyneApp {
                 &api_base_url,
                 &api_key,
                 agent_mode,
+                model,
+                &stream_tx,
+                &approval_tx,
+                &project_id,
+                &chat_id,
+                &active_child,
+                &cancel_requested,
             );
+            let cancelled = cancel_requested.load(Ordering::SeqCst)
+                && matches!(&result, Err(error) if error == "Запит скасовано.");
             let _ = tx.send(ClaudeResult {
                 project_id,
                 chat_id,
+                cancelled,
                 result,
             });
         });
+    }
+
+    fn cancel_claude(&mut self) {
+        self.cancel_requested.store(true, Ordering::SeqCst);
+        self.status = Some(match stop_active_child(&self.active_child) {
+            Ok(()) => "Скасовую запит до Claude Code…".to_owned(),
+            Err(error) => error,
+        });
+    }
+
+    fn resolve_file_approval(&mut self, allow: bool) {
+        if let Some(approval) = self.pending_file_approval.take() {
+            if approval.response_tx.send(allow).is_err() {
+                self.status = Some("Не вдалося передати рішення Claude Code.".to_owned());
+            }
+        }
     }
 
     fn save_provider_key(&mut self) {
@@ -398,11 +880,37 @@ impl MnemosyneApp {
     }
 
     fn receive_result(&mut self, ctx: &egui::Context) {
+        while let Ok(approval) = self.approval_rx.try_recv() {
+            if self.pending_file_approval.is_none() {
+                self.pending_file_approval = Some(approval);
+            } else if approval.response_tx.send(false).is_err() {
+                self.status = Some("Не вдалося відхилити додаткову зміну Claude Code.".to_owned());
+            }
+        }
+        while let Ok(chunk) = self.stream_rx.try_recv() {
+            if self.active_request.as_ref() == Some(&(chunk.project_id, chunk.chat_id)) {
+                match chunk.update {
+                    ClaudeStreamUpdate::Text(text) => self.streaming_content.push_str(&text),
+                    ClaudeStreamUpdate::Tool(tool) => self.current_tool = Some(tool),
+                }
+            }
+        }
         while let Ok(response) = self.result_rx.try_recv() {
             self.busy = false;
-            let response_content = match response.result {
-                Ok(text) => text,
-                Err(error) => format!("Помилка Claude Code: {error}"),
+            self.resolve_file_approval(false);
+            let cancelled = response.cancelled;
+            let response_content = if cancelled {
+                self.streaming_content.clone()
+            } else {
+                match response.result {
+                    Ok(text) => text,
+                    Err(error) if self.streaming_content.is_empty() => {
+                        format!("Помилка Claude Code: {error}")
+                    }
+                    Err(error) => {
+                        format!("{}\n\nПомилка Claude Code: {error}", self.streaming_content)
+                    }
+                }
             };
             if let Some(project) = self
                 .state
@@ -415,15 +923,23 @@ impl MnemosyneApp {
                     .iter_mut()
                     .find(|chat| chat.id == response.chat_id)
                 {
-                    chat.messages.push(Message {
-                        role: MessageRole::Assistant,
-                        content: response_content,
-                        attachments: Vec::new(),
-                        created_at: Local::now(),
-                    });
+                    if !cancelled || !response_content.is_empty() {
+                        chat.messages.push(Message {
+                            role: MessageRole::Assistant,
+                            content: response_content,
+                            attachments: Vec::new(),
+                            created_at: Local::now(),
+                        });
+                    }
                 }
             }
+            self.streaming_content.clear();
+            self.current_tool = None;
+            self.active_request = None;
             self.save();
+            if cancelled {
+                self.status = Some("Запит скасовано.".to_owned());
+            }
             ctx.request_repaint();
         }
         while let Ok(response) = self.provider_check_rx.try_recv() {
@@ -473,6 +989,7 @@ impl eframe::App for MnemosyneApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.receive_result(ctx);
 
+        let mut request_project_removal = None;
         egui::SidePanel::left("workspace")
             .default_width(250.0)
             .resizable(true)
@@ -517,17 +1034,46 @@ impl eframe::App for MnemosyneApp {
                     .collect();
                 for (id, name) in projects {
                     let selected = self.state.selected_project.as_deref() == Some(id.as_str());
-                    if ui
-                        .selectable_label(selected, format!("📁 {name}"))
-                        .clicked()
-                    {
-                        self.state.selected_project = Some(id);
+                    let clicked = ui
+                        .horizontal(|ui| {
+                            let clicked = ui
+                                .selectable_label(selected, format!("📁 {name}"))
+                                .clicked();
+                            if selected
+                                && ui
+                                    .small_button("⋯")
+                                    .on_hover_text("Прибрати проєкт зі списку")
+                                    .clicked()
+                            {
+                                request_project_removal = Some((id.clone(), name.clone()));
+                            }
+                            clicked
+                        })
+                        .inner;
+                    if clicked {
+                        if selected {
+                            continue;
+                        }
+                        if self.refuse_project_change_with_unsaved_file() {
+                            continue;
+                        }
+                        self.state.selected_project = Some(id.clone());
                         self.state.selected_chat = None;
+                        self.open_project_file = None;
+                        self.project_files.clear();
+                        self.project_files_truncated = false;
+                        if self.show_project_files {
+                            self.refresh_project_files();
+                        }
                         self.save();
                     }
                 }
 
                 if self.selected_project().is_some() {
+                    if ui.button("📄 Файли проєкту").clicked() {
+                        self.show_project_files = true;
+                        self.refresh_project_files();
+                    }
                     ui.add_space(16.0);
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("ЧАТИ").weak().size(11.0));
@@ -558,14 +1104,69 @@ impl eframe::App for MnemosyneApp {
                 }
             });
 
+        if let Some((project_id, project_name)) = request_project_removal {
+            if self.busy {
+                self.status = Some(
+                    "Дочекайся завершення або скасуй запит перед прибиранням проєкту.".to_owned(),
+                );
+            } else if self
+                .open_project_file
+                .as_ref()
+                .is_some_and(|file| file.project_id == project_id && file.dirty)
+            {
+                self.status = Some("Спершу збережи зміни у відкритому файлі.".to_owned());
+            } else {
+                self.pending_project_removal = Some((project_id, project_name));
+            }
+        }
+
+        let mut request_cancel = false;
+        let mut request_create_chat = false;
+        let mut start_chat_rename = None;
+        let mut save_chat_rename = None;
+        let mut cancel_chat_rename = false;
+        let mut request_chat_delete = None;
+        let mut request_chat_clear = None;
+        let mut request_chat_export = None;
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(status) = self.status.clone() {
                 ui.colored_label(egui::Color32::LIGHT_RED, status);
+            }
+            if self.busy {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.cancel_requested.load(Ordering::SeqCst),
+                            egui::Button::new("Скасувати запит"),
+                        )
+                        .clicked()
+                    {
+                        request_cancel = true;
+                    }
+                    ui.weak(if self.cancel_requested.load(Ordering::SeqCst) {
+                        "Очікую завершення процесу…"
+                    } else {
+                        "Claude Code працює"
+                    });
+                });
+                if let Some(tool) = &self.current_tool {
+                    ui.weak(format!("Активний інструмент: {tool}"));
+                }
             }
 
             match self.selected_chat() {
                 Some(chat) => {
                     let title = chat.title.clone();
+                    let chat_id = chat.id.clone();
+                    let project_id = self.state.selected_project.clone().unwrap_or_default();
+                    let editing_this_chat = self.editing_chat.as_deref() == Some(chat_id.as_str());
+                    let is_active_chat = self.active_request.as_ref().is_some_and(
+                        |(project_id, active_chat_id)| {
+                            Some(project_id.as_str()) == self.state.selected_project.as_deref()
+                                && active_chat_id == &chat.id
+                        },
+                    );
+                    let streaming_content = self.streaming_content.clone();
                     let messages: Vec<(MessageRole, String, Vec<PathBuf>, String)> = chat
                         .messages
                         .iter()
@@ -578,7 +1179,47 @@ impl eframe::App for MnemosyneApp {
                             )
                         })
                         .collect();
-                    ui.heading(title);
+                    ui.horizontal(|ui| {
+                        if editing_this_chat {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.chat_title_draft)
+                                    .desired_width(260.0),
+                            );
+                            if ui.button("Зберегти назву").clicked() {
+                                save_chat_rename = Some((
+                                    project_id.clone(),
+                                    chat_id.clone(),
+                                    self.chat_title_draft.clone(),
+                                ));
+                            }
+                            if ui.button("Скасувати").clicked() {
+                                cancel_chat_rename = true;
+                            }
+                        } else {
+                            ui.heading(title.clone());
+                            if ui.small_button("Експорт Markdown").clicked() {
+                                request_chat_export =
+                                    Some((project_id.clone(), chat_id.clone()));
+                            }
+                            if ui.small_button("Перейменувати").clicked() {
+                                start_chat_rename = Some((chat_id.clone(), title.clone()));
+                            }
+                            if ui
+                                .add_enabled(!self.busy, egui::Button::new("Очистити історію"))
+                                .clicked()
+                            {
+                                request_chat_clear =
+                                    Some((project_id.clone(), chat_id.clone(), title.clone()));
+                            }
+                            if ui
+                                .add_enabled(!self.busy, egui::Button::new("Видалити чат"))
+                                .clicked()
+                            {
+                                request_chat_delete =
+                                    Some((project_id.clone(), chat_id.clone(), title.clone()));
+                            }
+                        }
+                    });
                     ui.separator();
 
                     egui::ScrollArea::vertical()
@@ -597,8 +1238,10 @@ impl eframe::App for MnemosyneApp {
                                         ui.strong(if is_user { "Ти" } else { "Claude" });
                                         ui.weak(time);
                                     });
-                                    if !content.is_empty() {
+                                    if !content.is_empty() && is_user {
                                         ui.label(content);
+                                    } else if !content.is_empty() {
+                                        show_markdown_preview(ui, &content);
                                     }
                                     for attachment in attachments {
                                         ui.weak(format!(
@@ -612,10 +1255,18 @@ impl eframe::App for MnemosyneApp {
                                 });
                                 ui.add_space(6.0);
                             }
-                            if self.busy {
+                            if self.busy && is_active_chat {
+                                if !streaming_content.is_empty() {
+                                    egui::Frame::group(ui.style())
+                                        .fill(ui.visuals().faint_bg_color)
+                                        .show(ui, |ui| {
+                                            ui.strong("Claude · відповідь генерується");
+                                            ui.label(&streaming_content);
+                                        });
+                                }
                                 ui.horizontal(|ui| {
                                     ui.spinner();
-                                    ui.label("Claude думає...");
+                                    ui.label("Claude думає…");
                                 });
                             }
                         });
@@ -635,10 +1286,10 @@ impl eframe::App for MnemosyneApp {
                             .selectable_value(
                                 &mut self.state.agent_mode,
                                 AgentMode::Turbo,
-                                "Turbo · редагування",
+                                "Turbo · підтвердження змін",
                             )
                             .on_hover_text(
-                                "Автоматично дозволяє зміни файлів; виконання shell-команд вимкнене.",
+                                "Показує попередній перегляд і запитує підтвердження кожної зміни; shell-команди вимкнені.",
                             )
                             .changed();
                     });
@@ -647,8 +1298,69 @@ impl eframe::App for MnemosyneApp {
                     }
                     ui.weak(match self.state.agent_mode {
                         AgentMode::Plan => "Claude може читати проєкт і складати план, але не змінювати файли.",
-                        AgentMode::Turbo => "Claude може автоматично редагувати файли. Shell-команди й інші інструменти вимкнені.",
+                        AgentMode::Turbo => "Перед кожною зміною файла Mnemosyne покаже попередній перегляд і запитає дозвіл. Shell-команди вимкнені.",
                     });
+                    let mut model_changed = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Модель:");
+                        egui::ComboBox::from_id_salt("claude-model-family")
+                            .selected_text(self.state.claude_model.label())
+                            .show_ui(ui, |ui| {
+                                model_changed |= ui
+                                    .selectable_value(
+                                        &mut self.state.claude_model,
+                                        ClaudeModel::Sonnet,
+                                        "Sonnet",
+                                    )
+                                    .changed();
+                                model_changed |= ui
+                                    .selectable_value(
+                                        &mut self.state.claude_model,
+                                        ClaudeModel::Opus,
+                                        "Opus",
+                                    )
+                                    .changed();
+                                model_changed |= ui
+                                    .selectable_value(
+                                        &mut self.state.claude_model,
+                                        ClaudeModel::Haiku,
+                                        "Haiku",
+                                    )
+                                    .changed();
+                            });
+                    });
+                    if model_changed {
+                        self.save();
+                    }
+                    ui.weak("Вибрана сім’я передається Claude Code; її маршрут налаштовується у FreeLLMAPI → Keys → Anthropic.");
+
+                    let mut context_limit_changed = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Контекст чату:");
+                        egui::ComboBox::from_id_salt("conversation-context-limit")
+                            .selected_text(self.state.context_limit.label())
+                            .show_ui(ui, |ui| {
+                                for limit in [
+                                    ConversationContextLimit::Last5Turns,
+                                    ConversationContextLimit::Last10Turns,
+                                    ConversationContextLimit::Last20Turns,
+                                    ConversationContextLimit::Last40Turns,
+                                    ConversationContextLimit::All,
+                                ] {
+                                    context_limit_changed |= ui
+                                        .selectable_value(
+                                            &mut self.state.context_limit,
+                                            limit,
+                                            limit.label(),
+                                        )
+                                        .changed();
+                                }
+                            });
+                    });
+                    if context_limit_changed {
+                        self.save();
+                    }
+                    ui.weak("Старі повідомлення залишаються в історії, але не передаються моделі, якщо вибрано ліміт.");
                     ui.horizontal_wrapped(|ui| {
                         for (label, prompt) in [
                             (
@@ -719,12 +1431,315 @@ impl eframe::App for MnemosyneApp {
                 None => {
                     ui.vertical_centered(|ui| {
                         ui.add_space(100.0);
-                        ui.heading("Почни з проєкту");
-                        ui.label("Додай папку з кодом або створи новий проєкт.");
+                        if self.selected_project().is_some() {
+                            ui.heading("У проєкті ще немає чатів");
+                            if ui.button("Створити чат").clicked() {
+                                request_create_chat = true;
+                            }
+                        } else {
+                            ui.heading("Почни з проєкту");
+                            ui.label("Додай папку з кодом або створи новий проєкт.");
+                        }
                     });
                 }
             }
         });
+        if request_create_chat {
+            self.create_chat();
+        }
+        if request_cancel {
+            self.cancel_claude();
+        }
+        if let Some((chat_id, title)) = start_chat_rename {
+            self.editing_chat = Some(chat_id);
+            self.chat_title_draft = title;
+        }
+        if let Some((project_id, chat_id, title)) = save_chat_rename {
+            self.rename_chat(&project_id, &chat_id, &title);
+        }
+        if cancel_chat_rename {
+            self.editing_chat = None;
+            self.chat_title_draft.clear();
+        }
+        if let Some(target) = request_chat_delete {
+            self.pending_chat_delete = Some(target);
+        }
+        if let Some(target) = request_chat_clear {
+            self.pending_chat_clear = Some(target);
+        }
+        if let Some((project_id, chat_id)) = request_chat_export {
+            self.export_chat(&project_id, &chat_id);
+        }
+        if let Some((tool, path, preview)) = self.pending_file_approval.as_ref().map(|approval| {
+            (
+                approval.tool.clone(),
+                approval.path.clone(),
+                approval.preview.clone(),
+            )
+        }) {
+            let mut open = true;
+            let mut allow = false;
+            let mut deny = false;
+            egui::Window::new("Підтвердити зміну файлу")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Claude Code хоче виконати {tool} для файла:"));
+                    ui.code(path);
+                    egui::ScrollArea::vertical()
+                        .max_height(240.0)
+                        .show(ui, |ui| ui.monospace(&preview));
+                    ui.label("Дозвіл стосується лише цієї однієї операції.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Дозволити цю зміну").clicked() {
+                            allow = true;
+                        }
+                        if ui.button("Відхилити").clicked() {
+                            deny = true;
+                        }
+                    });
+                });
+            if allow {
+                self.resolve_file_approval(true);
+            } else if deny || !open {
+                self.resolve_file_approval(false);
+            }
+        }
+        if let Some((project_id, chat_id, title)) = self.pending_chat_clear.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut dismiss = false;
+            egui::Window::new("Очистити історію чату?")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Усі повідомлення та вкладення чату «{title}» буде видалено. Сам чат і його назва залишаться."
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("Очистити історію").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Скасувати").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if confirm {
+                self.clear_chat_history(&project_id, &chat_id);
+            } else if dismiss || !open {
+                self.pending_chat_clear = None;
+            }
+        }
+        if let Some((project_id, chat_id, title)) = self.pending_chat_delete.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut dismiss = false;
+            egui::Window::new("Підтвердження видалення")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Видалити чат «{title}» разом з усією його історією? Це неможливо скасувати."
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("Видалити назавжди").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Залишити чат").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if confirm {
+                self.delete_chat(&project_id, &chat_id);
+            } else if dismiss || !open {
+                self.pending_chat_delete = None;
+            }
+        }
+        if let Some((project_id, project_name)) = self.pending_project_removal.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut dismiss = false;
+            egui::Window::new("Прибрати проєкт?")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "«{project_name}» буде прибрано зі списку Mnemosyne разом із локальними чатами. Файли та папка проєкту на диску залишаться без змін."
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("Прибрати проєкт").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Залишити").clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+            if confirm {
+                self.remove_project_from_workspace(&project_id);
+            } else if dismiss || !open {
+                self.pending_project_removal = None;
+            }
+        }
+
+        if self.show_project_files {
+            let project_name = self.selected_project().map(|project| project.name.clone());
+            let mut show_files = self.show_project_files;
+            let mut refresh_files = false;
+            let mut requested_file = None;
+            let mut requested_document = None;
+            let mut save_file = false;
+            egui::Window::new("Файли проєкту")
+                .open(&mut show_files)
+                .default_size([900.0, 620.0])
+                .resizable(true)
+                .show(ctx, |ui| {
+                    let Some(project_name) = project_name else {
+                        ui.label("Спершу вибери проєкт.");
+                        return;
+                    };
+                    ui.horizontal(|ui| {
+                        ui.strong(project_name);
+                        if ui.small_button("Оновити список").clicked() {
+                            refresh_files = true;
+                        }
+                        if ui.small_button("+ План").clicked() {
+                            requested_document = Some(ProjectDocumentKind::Plan);
+                        }
+                        if ui.small_button("+ Звіт").clicked() {
+                            requested_document = Some(ProjectDocumentKind::Report);
+                        }
+                        if self.project_files_truncated {
+                            ui.weak("Список обмежено першими 2000 файлами.");
+                        }
+                    });
+                    ui.weak("Документи створюються у docs/plans та docs/reports.");
+                    ui.separator();
+                    ui.columns(2, |columns| {
+                        columns[0].add(
+                            egui::TextEdit::singleline(&mut self.project_file_filter)
+                                .hint_text("Фільтр файлів"),
+                        );
+                        egui::ScrollArea::vertical()
+                            .id_salt("project-file-list")
+                            .show(&mut columns[0], |ui| {
+                                let mut matching_files = 0;
+                                for relative_path in self.project_files.clone() {
+                                    if !project_file_matches_filter(
+                                        &relative_path,
+                                        &self.project_file_filter,
+                                    ) {
+                                        continue;
+                                    }
+                                    matching_files += 1;
+                                    let label = relative_path.to_string_lossy();
+                                    if ui.small_button(label).clicked() {
+                                        requested_file = Some(relative_path);
+                                    }
+                                }
+                                if matching_files == 0 {
+                                    ui.weak(if self.project_files.is_empty() {
+                                        "Файлів проєкту не знайдено."
+                                    } else {
+                                        "За цим фільтром нічого не знайдено."
+                                    });
+                                }
+                            });
+
+                        if let Some(file) = self.open_project_file.as_mut() {
+                            columns[1].horizontal(|ui| {
+                                ui.strong(file.relative_path.to_string_lossy());
+                                if let Some(image) = &file.image {
+                                    ui.weak(format!("{} × {}", image.width, image.height));
+                                } else if file.dirty {
+                                    ui.colored_label(egui::Color32::YELLOW, "Не збережено");
+                                }
+                            });
+                            if file.image.is_none() {
+                                columns[1].horizontal(|ui| {
+                                    if ui
+                                        .button(if file.markdown_preview {
+                                            "Редагувати"
+                                        } else {
+                                            "Перегляд"
+                                        })
+                                        .clicked()
+                                    {
+                                        file.markdown_preview = !file.markdown_preview;
+                                    }
+                                    if ui
+                                        .add_enabled(file.dirty, egui::Button::new("Зберегти"))
+                                        .clicked()
+                                    {
+                                        save_file = true;
+                                    }
+                                });
+                            }
+                            columns[1].separator();
+                            egui::ScrollArea::both()
+                                .id_salt("project-file-content")
+                                .show(&mut columns[1], |ui| {
+                                    if let Some(image) = &file.image {
+                                        let available = ui.available_size();
+                                        let scale = (available.x / image.width as f32)
+                                            .min(available.y / image.height as f32)
+                                            .min(1.0);
+                                        let size = egui::vec2(
+                                            image.width as f32 * scale,
+                                            image.height as f32 * scale,
+                                        );
+                                        ui.image((image.texture.id(), size));
+                                    } else if file.markdown_preview {
+                                        show_markdown_preview(ui, &file.content);
+                                    } else {
+                                        let response = ui.add(
+                                            egui::TextEdit::multiline(&mut file.content)
+                                                .font(egui::TextStyle::Monospace)
+                                                .desired_width(f32::INFINITY)
+                                                .desired_rows(28),
+                                        );
+                                        if response.changed() {
+                                            file.dirty = true;
+                                        }
+                                    }
+                                });
+                        } else {
+                            columns[1].label("Вибери текстовий або Markdown-файл.");
+                        }
+                    });
+                });
+            self.show_project_files = show_files;
+            if refresh_files {
+                self.refresh_project_files();
+            }
+            if let Some(relative_path) = requested_file {
+                self.open_project_file(&relative_path, ctx);
+            }
+            if let Some(kind) = requested_document {
+                if !self.refuse_project_change_with_unsaved_file() {
+                    if let Some(project_root) =
+                        self.selected_project().map(|project| project.path.clone())
+                    {
+                        match create_project_markdown_document(&project_root, kind) {
+                            Ok(relative_path) => {
+                                self.refresh_project_files();
+                                self.open_project_file(&relative_path, ctx);
+                            }
+                            Err(error) => self.status = Some(error),
+                        }
+                    }
+                }
+            }
+            if save_file {
+                self.save_open_project_file();
+            }
+        }
 
         if self.show_settings {
             let mut show_settings = self.show_settings;
@@ -828,7 +1843,1049 @@ fn save_state(state: &AppState) -> Result<(), String> {
     let path = state_path()?;
     let content = serde_json::to_string_pretty(state)
         .map_err(|error| format!("Не вдалося підготувати дані до збереження: {error}"))?;
-    fs::write(&path, content).map_err(|error| format!("Не вдалося зберегти дані: {error}"))
+    atomic_write(&path, content.as_bytes())
+}
+
+fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| "Не вдалося визначити папку для тимчасового файла.".to_owned())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "Не вдалося визначити назву файла для збереження.".to_owned())?
+        .to_string_lossy();
+    let temp_path = parent.join(format!(".{name}.{}.tmp", Uuid::new_v4()));
+    let write_result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|error| format!("Не вдалося створити тимчасовий файл стану: {error}"))?;
+        file.write_all(content)
+            .map_err(|error| format!("Не вдалося записати тимчасовий файл стану: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Не вдалося завершити запис файла стану: {error}"))?;
+        drop(file);
+        fs::rename(&temp_path, path)
+            .map_err(|error| format!("Не вдалося атомарно зберегти файл стану: {error}"))
+    })();
+
+    if let Err(error) = write_result {
+        return match fs::remove_file(&temp_path) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error)
+            }
+            Err(cleanup_error) => Err(format!(
+                "{error}; не вдалося прибрати тимчасовий файл {}: {cleanup_error}",
+                temp_path.display()
+            )),
+        };
+    }
+    Ok(())
+}
+
+fn list_project_files(project_root: &Path) -> Result<ProjectFileList, String> {
+    let root = project_root
+        .canonicalize()
+        .map_err(|error| format!("Не вдалося відкрити папку проєкту: {error}"))?;
+    if !root.is_dir() {
+        return Err("Шлях проєкту більше не є папкою.".to_owned());
+    }
+
+    let mut pending = vec![(root.clone(), 0_usize)];
+    let mut files = Vec::new();
+    let mut truncated = false;
+    'scan: while let Some((directory, depth)) = pending.pop() {
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| format!("Не вдалося прочитати {}: {error}", directory.display()))?;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("Не вдалося прочитати список файлів проєкту: {error}"))?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!(
+                    "Не вдалося визначити тип {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            let path = entry.path();
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if depth < MAX_PROJECT_SCAN_DEPTH && !ignored_project_directory(&name) {
+                    pending.push((path, depth + 1));
+                }
+            } else if file_type.is_file() {
+                let relative_path = path
+                    .strip_prefix(&root)
+                    .map_err(|error| format!("Файл вийшов за межі проєкту: {error}"))?;
+                if files.len() == MAX_PROJECT_FILES {
+                    truncated = true;
+                    break 'scan;
+                }
+                files.push(relative_path.to_owned());
+            }
+        }
+    }
+    files.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+    Ok(ProjectFileList { files, truncated })
+}
+
+fn project_file_matches_filter(path: &Path, filter: &str) -> bool {
+    let filter = filter.trim();
+    filter.is_empty()
+        || path
+            .to_string_lossy()
+            .to_lowercase()
+            .contains(&filter.to_lowercase())
+}
+
+fn ignored_project_directory(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        ".git"
+            | ".next"
+            | ".venv"
+            | "__pycache__"
+            | "bin"
+            | "build"
+            | "dist"
+            | "node_modules"
+            | "obj"
+            | "target"
+            | "vendor"
+            | "venv"
+    )
+}
+
+fn is_supported_project_text_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        ".env.example" | ".gitignore" | "cargo.lock" | "dockerfile" | "license" | "makefile"
+    ) {
+        return true;
+    }
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "c" | "cc"
+                | "cfg"
+                | "cpp"
+                | "cs"
+                | "css"
+                | "go"
+                | "h"
+                | "hpp"
+                | "html"
+                | "ini"
+                | "java"
+                | "js"
+                | "json"
+                | "jsx"
+                | "lock"
+                | "log"
+                | "md"
+                | "ps1"
+                | "py"
+                | "rs"
+                | "sh"
+                | "sql"
+                | "toml"
+                | "ts"
+                | "tsx"
+                | "txt"
+                | "xml"
+                | "yaml"
+                | "yml"
+        )
+    )
+}
+
+fn is_supported_project_image_file(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("bmp" | "gif" | "jpeg" | "jpg" | "png" | "webp")
+    )
+}
+
+fn is_supported_project_pdf_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+}
+
+fn canonical_project_file(project_root: &Path, relative_path: &Path) -> Result<PathBuf, String> {
+    if relative_path.as_os_str().is_empty()
+        || relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("Вибери файл усередині папки проєкту.".to_owned());
+    }
+    let root = project_root
+        .canonicalize()
+        .map_err(|error| format!("Не вдалося відкрити папку проєкту: {error}"))?;
+    let path = root
+        .join(relative_path)
+        .canonicalize()
+        .map_err(|error| format!("Не вдалося відкрити файл проєкту: {error}"))?;
+    if !path.starts_with(&root) || !path.is_file() {
+        return Err("Файл має бути звичайним файлом усередині проєкту.".to_owned());
+    }
+    Ok(path)
+}
+
+fn read_project_text_file(project_root: &Path, relative_path: &Path) -> Result<String, String> {
+    if !is_supported_project_text_file(relative_path) {
+        return Err("Вбудований перегляд цього типу файлів ще не підтримується.".to_owned());
+    }
+    let path = canonical_project_file(project_root, relative_path)?;
+    let metadata = fs::metadata(&path)
+        .map_err(|error| format!("Не вдалося прочитати атрибути файлу: {error}"))?;
+    if metadata.len() > MAX_PROJECT_FILE_BYTES {
+        return Err("Файл завеликий для вбудованого редактора (ліміт 2 МБ).".to_owned());
+    }
+    fs::read_to_string(path)
+        .map_err(|error| format!("Файл не є коректним UTF-8 текстом або не читається: {error}"))
+}
+
+fn read_project_image_file(
+    project_root: &Path,
+    relative_path: &Path,
+) -> Result<(egui::ColorImage, u32, u32), String> {
+    if !is_supported_project_image_file(relative_path) {
+        return Err("Вбудований перегляд цього типу зображень не підтримується.".to_owned());
+    }
+    let path = canonical_project_file(project_root, relative_path)?;
+    let metadata = fs::metadata(&path)
+        .map_err(|error| format!("Не вдалося прочитати атрибути зображення: {error}"))?;
+    if metadata.len() > MAX_PROJECT_IMAGE_BYTES {
+        return Err("Зображення завелике для перегляду (ліміт 20 МБ).".to_owned());
+    }
+
+    let dimension_reader = image::ImageReader::open(&path)
+        .map_err(|error| format!("Не вдалося відкрити зображення: {error}"))?
+        .with_guessed_format()
+        .map_err(|error| format!("Не вдалося розпізнати формат зображення: {error}"))?;
+    let dimensions = dimension_reader
+        .into_dimensions()
+        .map_err(|error| format!("Не вдалося прочитати розмір зображення: {error}"))?;
+    let (width, height) = dimensions;
+    if width == 0
+        || height == 0
+        || width > MAX_PROJECT_IMAGE_DIMENSION
+        || height > MAX_PROJECT_IMAGE_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_PROJECT_IMAGE_PIXELS
+    {
+        return Err("Роздільність зображення перевищує ліміт вбудованого перегляду.".to_owned());
+    }
+
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_PROJECT_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_PROJECT_IMAGE_DIMENSION);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    let mut reader = image::ImageReader::open(&path)
+        .map_err(|error| format!("Не вдалося відкрити зображення: {error}"))?
+        .with_guessed_format()
+        .map_err(|error| format!("Не вдалося розпізнати формат зображення: {error}"))?;
+    reader.limits(limits);
+    let decoded = reader
+        .decode()
+        .map_err(|error| format!("Не вдалося декодувати зображення: {error}"))?
+        .into_rgba8();
+    if decoded.dimensions() != dimensions {
+        return Err("Розмір декодованого зображення не збігається із заголовком.".to_owned());
+    }
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+        [width as usize, height as usize],
+        decoded.as_raw(),
+    );
+    Ok((color_image, width, height))
+}
+
+fn save_project_text_file(
+    project_root: &Path,
+    relative_path: &Path,
+    content: &str,
+) -> Result<(), String> {
+    if !is_supported_project_text_file(relative_path) {
+        return Err("Збереження цього типу файлів не підтримується.".to_owned());
+    }
+    if content.len() as u64 > MAX_PROJECT_FILE_BYTES {
+        return Err("Файл завеликий для вбудованого редактора (ліміт 2 МБ).".to_owned());
+    }
+    let path = canonical_project_file(project_root, relative_path)?;
+    fs::write(path, content).map_err(|error| format!("Не вдалося зберегти файл: {error}"))
+}
+
+fn create_project_markdown_document(
+    project_root: &Path,
+    kind: ProjectDocumentKind,
+) -> Result<PathBuf, String> {
+    let root = project_root
+        .canonicalize()
+        .map_err(|error| format!("Не вдалося відкрити папку проєкту: {error}"))?;
+    if !root.is_dir() {
+        return Err("Шлях проєкту більше не є папкою.".to_owned());
+    }
+
+    let (subdirectories, prefix, template) = match kind {
+        ProjectDocumentKind::Plan => (
+            ["docs", "plans"],
+            "plan",
+            "# План реалізації\n\n\
+             ## Мета\n\n\
+             Опиши очікуваний результат.\n\n\
+             ## Обсяг\n\n\
+             - Що входить у роботу:\n\
+             - Що не входить:\n\n\
+             ## Етапи\n\n\
+             - [ ] Крок 1\n\
+             - [ ] Крок 2\n\n\
+             ## Критерії готовності\n\n\
+             - [ ] Перевірюваний результат\n\n\
+             ## Ризики та відкриті питання\n\n",
+        ),
+        ProjectDocumentKind::Report => (
+            ["docs", "reports"],
+            "report",
+            "# Звіт про роботу\n\n\
+             ## Підсумок\n\n\
+             ## Виконані зміни\n\n\
+             ## Перевірки\n\n\
+             ## Відкриті питання та ризики\n\n\
+             ## Наступні кроки\n\n",
+        ),
+    };
+
+    let mut directory = root.clone();
+    for subdirectory in subdirectories {
+        let next = directory.join(subdirectory);
+        match fs::symlink_metadata(&next) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(format!(
+                    "Папка документів має бути звичайною папкою: {}",
+                    next.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&next).map_err(|error| {
+                    format!(
+                        "Не вдалося створити папку документів {}: {error}",
+                        next.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Не вдалося перевірити папку документів {}: {error}",
+                    next.display()
+                ));
+            }
+        }
+        directory = next
+            .canonicalize()
+            .map_err(|error| format!("Не вдалося відкрити папку документів: {error}"))?;
+        if !directory.starts_with(&root) {
+            return Err("Папка документів має бути всередині проєкту.".to_owned());
+        }
+    }
+
+    let timestamp = Local::now();
+    let suffix = Uuid::new_v4().simple().to_string();
+    let file_name = format!(
+        "{prefix}-{}-{}.md",
+        timestamp.format("%Y%m%d-%H%M%S"),
+        &suffix[..8]
+    );
+    let path = directory.join(file_name);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("Не вдалося створити документ {}: {error}", path.display()))?;
+    if let Err(error) = file.write_all(template.as_bytes()) {
+        drop(file);
+        if let Err(cleanup_error) = fs::remove_file(&path) {
+            return Err(format!(
+                "Не вдалося записати документ ({error}) або прибрати неповний файл {} ({cleanup_error}).",
+                path.display()
+            ));
+        }
+        return Err(format!("Не вдалося записати документ: {error}"));
+    }
+
+    path.strip_prefix(&root)
+        .map(Path::to_owned)
+        .map_err(|error| format!("Не вдалося визначити шлях документа в проєкті: {error}"))
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum MarkdownBlockKind {
+    Paragraph,
+    Heading(HeadingLevel),
+    Code,
+    Quote,
+    ListItem,
+    TableRow,
+    Rule,
+}
+
+#[derive(Debug, PartialEq)]
+struct MarkdownBlock {
+    kind: MarkdownBlockKind,
+    text: String,
+}
+
+#[derive(Default)]
+struct MarkdownBlockBuilder {
+    blocks: Vec<MarkdownBlock>,
+    current: Option<MarkdownBlock>,
+    lists: Vec<Option<u64>>,
+    quote_depth: usize,
+    table_cell_count: usize,
+}
+
+impl MarkdownBlockBuilder {
+    fn start(&mut self, kind: MarkdownBlockKind) {
+        self.flush();
+        self.current = Some(MarkdownBlock {
+            kind,
+            text: String::new(),
+        });
+    }
+
+    fn ensure(&mut self, kind: MarkdownBlockKind) {
+        if self.current.is_none() {
+            self.current = Some(MarkdownBlock {
+                kind,
+                text: String::new(),
+            });
+        }
+    }
+
+    fn push(&mut self, text: &str, kind: MarkdownBlockKind) {
+        self.ensure(kind);
+        if let Some(block) = &mut self.current {
+            block.text.push_str(text);
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(block) = self.current.take() {
+            if !block.text.is_empty() {
+                self.blocks.push(block);
+            }
+        }
+    }
+}
+
+fn markdown_blocks(markdown: &str) -> Vec<MarkdownBlock> {
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
+    let mut builder = MarkdownBlockBuilder::default();
+
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                builder.start(MarkdownBlockKind::Heading(level));
+            }
+            Event::Start(Tag::CodeBlock(_)) => builder.start(MarkdownBlockKind::Code),
+            Event::Start(Tag::Paragraph) => {
+                if builder.quote_depth > 0 {
+                    builder.start(MarkdownBlockKind::Quote);
+                    if let Some(block) = &mut builder.current {
+                        block.text.push_str(&"> ".repeat(builder.quote_depth));
+                    }
+                } else if !matches!(
+                    builder.current.as_ref().map(|block| &block.kind),
+                    Some(MarkdownBlockKind::ListItem)
+                ) {
+                    builder.start(MarkdownBlockKind::Paragraph);
+                } else {
+                    continue;
+                }
+            }
+            Event::Start(Tag::BlockQuote(_)) => builder.quote_depth += 1,
+            Event::Start(Tag::List(start)) => builder.lists.push(start),
+            Event::Start(Tag::Item) => {
+                builder.start(MarkdownBlockKind::ListItem);
+                let indent = "  ".repeat(builder.lists.len().saturating_sub(1));
+                if let Some(block) = &mut builder.current {
+                    block.text.push_str(&indent);
+                }
+                if let Some(Some(number)) = builder.lists.last_mut() {
+                    if let Some(block) = &mut builder.current {
+                        block.text.push_str(&format!("{number}. "));
+                    }
+                    *number = number.saturating_add(1);
+                } else if let Some(block) = &mut builder.current {
+                    block.text.push_str("• ");
+                }
+            }
+            Event::Start(Tag::Table(_)) => builder.table_cell_count = 0,
+            Event::Start(Tag::TableHead) | Event::Start(Tag::TableRow) => {
+                builder.table_cell_count = 0;
+                builder.start(MarkdownBlockKind::TableRow);
+            }
+            Event::Start(Tag::TableCell) => {
+                if builder.table_cell_count > 0 {
+                    builder.push(" │ ", MarkdownBlockKind::TableRow);
+                }
+                builder.table_cell_count += 1;
+            }
+            Event::Start(Tag::Image { .. }) => {
+                builder.push("[Зображення: ", MarkdownBlockKind::Paragraph);
+            }
+            Event::Start(Tag::HtmlBlock) => builder.start(MarkdownBlockKind::Code),
+            Event::End(TagEnd::Paragraph)
+            | Event::End(TagEnd::Heading(_))
+            | Event::End(TagEnd::CodeBlock)
+            | Event::End(TagEnd::Item)
+            | Event::End(TagEnd::TableHead)
+            | Event::End(TagEnd::TableRow)
+            | Event::End(TagEnd::HtmlBlock) => builder.flush(),
+            Event::End(TagEnd::BlockQuote(_)) => {
+                builder.quote_depth = builder.quote_depth.saturating_sub(1);
+            }
+            Event::End(TagEnd::List(_)) => {
+                builder.lists.pop();
+            }
+            Event::End(TagEnd::TableCell) => {}
+            Event::End(TagEnd::Image) => {
+                builder.push("]", MarkdownBlockKind::Paragraph);
+            }
+            Event::Text(text)
+            | Event::Code(text)
+            | Event::InlineMath(text)
+            | Event::DisplayMath(text)
+            | Event::Html(text)
+            | Event::InlineHtml(text) => {
+                let kind = if builder.current.is_some() {
+                    builder
+                        .current
+                        .as_ref()
+                        .expect("current block was checked")
+                        .kind
+                        .clone()
+                } else {
+                    MarkdownBlockKind::Paragraph
+                };
+                builder.push(&text, kind);
+            }
+            Event::SoftBreak => builder.push(" ", MarkdownBlockKind::Paragraph),
+            Event::HardBreak => builder.push("\n", MarkdownBlockKind::Paragraph),
+            Event::Rule => {
+                builder.flush();
+                builder.blocks.push(MarkdownBlock {
+                    kind: MarkdownBlockKind::Rule,
+                    text: String::new(),
+                });
+            }
+            Event::TaskListMarker(checked) => builder.push(
+                if checked { "[x] " } else { "[ ] " },
+                MarkdownBlockKind::ListItem,
+            ),
+            Event::FootnoteReference(label) => {
+                builder.push(&format!("[^{label}]"), MarkdownBlockKind::Paragraph);
+            }
+            Event::Start(_) | Event::End(_) => {}
+        }
+    }
+    builder.flush();
+    builder.blocks
+}
+
+fn show_markdown_preview(ui: &mut egui::Ui, markdown: &str) {
+    for block in markdown_blocks(markdown) {
+        match block.kind {
+            MarkdownBlockKind::Paragraph => {
+                ui.label(block.text);
+                ui.add_space(4.0);
+            }
+            MarkdownBlockKind::Heading(level) => {
+                let size = match level {
+                    HeadingLevel::H1 => 28.0,
+                    HeadingLevel::H2 => 24.0,
+                    HeadingLevel::H3 => 20.0,
+                    HeadingLevel::H4 => 18.0,
+                    HeadingLevel::H5 => 16.0,
+                    HeadingLevel::H6 => 14.0,
+                };
+                ui.heading(egui::RichText::new(block.text).size(size));
+            }
+            MarkdownBlockKind::Code => {
+                ui.label(
+                    egui::RichText::new(block.text)
+                        .monospace()
+                        .background_color(ui.visuals().code_bg_color),
+                );
+            }
+            MarkdownBlockKind::Quote => {
+                ui.label(egui::RichText::new(block.text).italics().weak());
+            }
+            MarkdownBlockKind::ListItem => {
+                ui.label(block.text);
+            }
+            MarkdownBlockKind::TableRow => {
+                ui.label(egui::RichText::new(block.text).monospace());
+            }
+            MarkdownBlockKind::Rule => {
+                ui.separator();
+            }
+        }
+    }
+}
+
+fn conversation_context(
+    messages: &[Message],
+    context_limit: ConversationContextLimit,
+) -> &[Message] {
+    let Some(max_user_turns) = context_limit.user_turns() else {
+        return messages;
+    };
+    let start = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, message)| message.role == MessageRole::User)
+        .nth(max_user_turns.saturating_sub(1))
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    &messages[start..]
+}
+
+fn normalize_chat_title(title: &str) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > 80 {
+        return Err("Назва чату має містити від 1 до 80 символів.".to_owned());
+    }
+    Ok(title.to_owned())
+}
+
+fn chat_export_markdown(chat: &Chat) -> String {
+    let mut markdown = format!("# {}\n\nЕкспортовано з Mnemosyne.\n\n", chat.title);
+    for message in &chat.messages {
+        let role = match message.role {
+            MessageRole::User => "Ти",
+            MessageRole::Assistant => "Claude",
+        };
+        markdown.push_str(&format!(
+            "## {role} · {}\n\n",
+            message.created_at.format("%Y-%m-%d %H:%M")
+        ));
+        if !message.content.is_empty() {
+            markdown.push_str(&message.content);
+            markdown.push_str("\n\n");
+        }
+        if !message.attachments.is_empty() {
+            markdown.push_str("Вкладення:\n");
+            for path in &message.attachments {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("файл")
+                    .replace('`', "'")
+                    .replace('\n', " ")
+                    .replace('\r', " ");
+                markdown.push_str(&format!("- `{name}`\n"));
+            }
+            markdown.push('\n');
+        }
+    }
+    markdown
+}
+
+fn remove_chat_from_project(project: &mut Project, chat_id: &str) -> bool {
+    let original_len = project.chats.len();
+    project.chats.retain(|chat| chat.id != chat_id);
+    project.chats.len() != original_len
+}
+
+fn clear_chat_messages(project: &mut Project, chat_id: &str) -> bool {
+    let Some(chat) = project.chats.iter_mut().find(|chat| chat.id == chat_id) else {
+        return false;
+    };
+    chat.messages.clear();
+    true
+}
+
+fn remove_project_record(state: &mut AppState, project_id: &str) -> bool {
+    let original_len = state.projects.len();
+    state.projects.retain(|project| project.id != project_id);
+    if state.projects.len() == original_len {
+        return false;
+    }
+    if state.selected_project.as_deref() == Some(project_id) {
+        state.selected_project = state.projects.first().map(|project| project.id.clone());
+        state.selected_chat = state
+            .projects
+            .first()
+            .and_then(|project| project.chats.first())
+            .map(|chat| chat.id.clone());
+    }
+    true
+}
+
+impl ApprovalServer {
+    fn start(
+        project_root: &Path,
+        additional_root: Option<&Path>,
+        agent_mode: AgentMode,
+        approval_tx: Sender<FileChangeApproval>,
+        cancel_requested: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let project_root = project_root
+            .canonicalize()
+            .map_err(|error| format!("Не вдалося перевірити папку проєкту: {error}"))?;
+        let mut allowed_roots = vec![project_root.clone()];
+        if let Some(additional_root) = additional_root {
+            let additional_root = additional_root
+                .canonicalize()
+                .map_err(|error| format!("Не вдалося перевірити папку вкладень: {error}"))?;
+            if !allowed_roots.contains(&additional_root) {
+                allowed_roots.push(additional_root);
+            }
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("Не вдалося запустити перевірку змін агента: {error}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("Не вдалося налаштувати перевірку змін агента: {error}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("Не вдалося визначити адресу перевірки змін: {error}"))?;
+        let token = Uuid::new_v4().to_string();
+        let running = Arc::new(AtomicBool::new(true));
+        let server_running = Arc::clone(&running);
+        let server_token = token.clone();
+        let thread = thread::spawn(move || {
+            while server_running.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, _)) => handle_approval_connection(
+                        stream,
+                        &project_root,
+                        &allowed_roots,
+                        agent_mode,
+                        &server_token,
+                        &approval_tx,
+                        &server_running,
+                        &cancel_requested,
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(error) => {
+                        eprintln!("Не вдалося обробити підтвердження зміни: {error}");
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            address,
+            token,
+            running,
+            thread: Some(thread),
+        })
+    }
+
+    fn settings_json(&self) -> Result<String, String> {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("Не вдалося визначити файл Mnemosyne: {error}"))?;
+        Ok(serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": executable,
+                        "args": [
+                            "--mnemosyne-approval-hook",
+                            self.address.to_string(),
+                            &self.token
+                        ],
+                        "timeout": 600
+                    }]
+                }]
+            }
+        })
+        .to_string())
+    }
+}
+
+impl Drop for ApprovalServer {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn handle_approval_connection(
+    mut stream: TcpStream,
+    project_root: &Path,
+    allowed_roots: &[PathBuf],
+    agent_mode: AgentMode,
+    expected_token: &str,
+    approval_tx: &Sender<FileChangeApproval>,
+    running: &AtomicBool,
+    cancel_requested: &AtomicBool,
+) {
+    let response = (|| -> Result<Vec<u8>, String> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|error| format!("Не вдалося налаштувати читання запиту: {error}"))?;
+        let request = read_approval_frame(&mut stream, MAX_APPROVAL_HOOK_BYTES)?;
+        let envelope: serde_json::Value = serde_json::from_slice(&request)
+            .map_err(|error| format!("Некоректний запит підтвердження: {error}"))?;
+        if envelope.get("token").and_then(serde_json::Value::as_str) != Some(expected_token) {
+            return Ok(approval_decision(
+                false,
+                "Mnemosyne відхилила неавторизований запит зміни.",
+            ));
+        }
+        let input = envelope
+            .get("input")
+            .ok_or_else(|| "У запиті підтвердження немає даних інструмента.".to_owned())?;
+        let tool = input
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Не вдалося визначити інструмент Claude Code.".to_owned())?;
+        let tool_input = input
+            .get("tool_input")
+            .ok_or_else(|| "Не вдалося прочитати параметри інструмента Claude Code.".to_owned())?;
+        if matches!(tool, "Read" | "Glob" | "Grep") {
+            let target = tool_input
+                .get(if tool == "Read" { "file_path" } else { "path" })
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| input.get("cwd").and_then(serde_json::Value::as_str))
+                .ok_or_else(|| "Не вдалося визначити шлях читання Claude Code.".to_owned())?;
+            let cwd = input
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from);
+            return Ok(
+                match path_within_roots(allowed_roots, target, cwd.as_deref()) {
+                    Ok(_) => approval_decision(true, ""),
+                    Err(reason) => approval_decision(false, &reason),
+                },
+            );
+        }
+        if !matches!(tool, "Edit" | "Write") || agent_mode != AgentMode::Turbo {
+            return Ok(approval_decision(
+                false,
+                "Інструмент недоступний у вибраному режимі Mnemosyne.",
+            ));
+        }
+        let target = tool_input
+            .get("file_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Не вдалося визначити файл для зміни.".to_owned())?;
+        let cwd = input
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from);
+        let relative_path = match project_relative_write_path(project_root, target, cwd.as_deref())
+        {
+            Ok(path) => path,
+            Err(reason) => return Ok(approval_decision(false, &reason)),
+        };
+        let (response_tx, response_rx) = mpsc::channel();
+        approval_tx
+            .send(FileChangeApproval {
+                tool: tool.to_owned(),
+                path: relative_path.to_string_lossy().into_owned(),
+                preview: file_change_preview(tool, tool_input),
+                response_tx,
+            })
+            .map_err(|error| format!("Не вдалося показати підтвердження зміни: {error}"))?;
+        loop {
+            if !running.load(Ordering::SeqCst) || cancel_requested.load(Ordering::SeqCst) {
+                return Ok(approval_decision(
+                    false,
+                    "Запит скасовано або вікно підтвердження закрито.",
+                ));
+            }
+            match response_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(true) => return Ok(approval_decision(true, "")),
+                Ok(false) => return Ok(approval_decision(false, "Зміну відхилено користувачем.")),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Ok(approval_decision(
+                        false,
+                        "Не вдалося отримати рішення щодо зміни.",
+                    ))
+                }
+            }
+        }
+    })()
+    .unwrap_or_else(|error| approval_decision(false, &error));
+    if let Err(error) = write_approval_frame(&mut stream, &response) {
+        eprintln!("Не вдалося повернути рішення для Claude Code: {error}");
+    }
+}
+
+fn file_change_preview(tool: &str, tool_input: &serde_json::Value) -> String {
+    const MAX_PREVIEW_CHARS: usize = 12_000;
+    let (label, content) = if tool == "Edit" {
+        let old = tool_input
+            .get("old_string")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(зміст для заміни не надано)");
+        let new = tool_input
+            .get("new_string")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(новий зміст не надано)");
+        (
+            "Заміна фрагмента",
+            format!("--- було\n{old}\n+++ стане\n{new}"),
+        )
+    } else {
+        let content = tool_input
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("(вміст для запису не надано)");
+        ("Новий вміст файла", content.to_owned())
+    };
+    let mut preview: String = content.chars().take(MAX_PREVIEW_CHARS).collect();
+    if content.chars().count() > MAX_PREVIEW_CHARS {
+        preview.push_str("\n… попередній перегляд обрізано");
+    }
+    format!("{label}\n{preview}")
+}
+
+fn project_relative_write_path(
+    project_root: &Path,
+    target: &str,
+    cwd: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let (root, relative) = resolve_path_within_roots(&[project_root.to_owned()], target, cwd)?;
+    if root != 0 || relative.as_os_str().is_empty() {
+        return Err("Зміна кореневої папки проєкту не дозволена.".to_owned());
+    }
+    Ok(relative)
+}
+
+fn path_within_roots(
+    roots: &[PathBuf],
+    target: &str,
+    cwd: Option<&Path>,
+) -> Result<(usize, PathBuf), String> {
+    resolve_path_within_roots(roots, target, cwd).map_err(|_| {
+        "Claude Code не може читати файли поза папками проєкту та вкладень.".to_owned()
+    })
+}
+
+fn resolve_path_within_roots(
+    roots: &[PathBuf],
+    target: &str,
+    cwd: Option<&Path>,
+) -> Result<(usize, PathBuf), String> {
+    let target_path = Path::new(target);
+    if target_path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("Шлях виходить за межі дозволених папок.".to_owned());
+    }
+    let candidate = if target_path.is_absolute() {
+        target_path.to_owned()
+    } else if let Some(cwd) = cwd {
+        cwd.join(target_path)
+    } else {
+        roots
+            .first()
+            .ok_or_else(|| "Не налаштовано дозволені папки.".to_owned())?
+            .join(target_path)
+    };
+    let resolved = resolve_existing_prefix(&candidate)
+        .map_err(|error| format!("Не вдалося перевірити шлях файлу: {error}"))?;
+    for (index, root) in roots.iter().enumerate() {
+        if let Ok(relative) = resolved.strip_prefix(root) {
+            return Ok((index, relative.to_owned()));
+        }
+    }
+    Err("Шлях виходить за межі дозволених папок.".to_owned())
+}
+
+fn resolve_existing_prefix(path: &Path) -> std::io::Result<PathBuf> {
+    let mut existing = path.to_owned();
+    let mut suffix = Vec::new();
+    loop {
+        match fs::symlink_metadata(&existing) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = existing
+                    .file_name()
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+                suffix.push(name.to_owned());
+                if !existing.pop() {
+                    return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let mut resolved = existing.canonicalize()?;
+    for component in suffix.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn approval_decision(allow: bool, reason: &str) -> Vec<u8> {
+    let mut output = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": if allow { "allow" } else { "deny" }
+        }
+    });
+    if !allow {
+        output["hookSpecificOutput"]["permissionDecisionReason"] =
+            serde_json::Value::String(reason.to_owned());
+    }
+    serde_json::to_vec(&output).expect("approval response is serializable")
+}
+
+fn read_approval_frame(stream: &mut TcpStream, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut length = [0; 4];
+    stream
+        .read_exact(&mut length)
+        .map_err(|error| format!("Не вдалося прочитати запит підтвердження: {error}"))?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length > max_bytes {
+        return Err("Запит підтвердження перевищує допустимий розмір.".to_owned());
+    }
+    let mut bytes = vec![0; length];
+    stream
+        .read_exact(&mut bytes)
+        .map_err(|error| format!("Не вдалося прочитати дані підтвердження: {error}"))?;
+    Ok(bytes)
+}
+
+fn write_approval_frame(stream: &mut TcpStream, bytes: &[u8]) -> std::io::Result<()> {
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    stream.write_all(&length.to_be_bytes())?;
+    stream.write_all(bytes)
 }
 
 fn run_claude(
@@ -837,6 +2894,13 @@ fn run_claude(
     api_base_url: &str,
     api_key: &str,
     agent_mode: AgentMode,
+    model: ClaudeModel,
+    stream_tx: &Sender<ClaudeStreamChunk>,
+    approval_tx: &Sender<FileChangeApproval>,
+    project_id: &str,
+    chat_id: &str,
+    active_child: &Arc<Mutex<Option<GroupChild>>>,
+    cancel_requested: &Arc<AtomicBool>,
 ) -> Result<String, String> {
     let has_attachments = messages
         .iter()
@@ -846,6 +2910,13 @@ fn run_claude(
     } else {
         Some(AttachmentStaging::new()?)
     };
+    let approval_server = Some(ApprovalServer::start(
+        project_path,
+        staging.as_ref().map(|staging| staging.path.as_path()),
+        agent_mode,
+        approval_tx.clone(),
+        Arc::clone(cancel_requested),
+    )?);
     let mut total_attachment_bytes = 0;
     let mut staged_attachment_index = 0;
     let mut prompt = String::new();
@@ -902,7 +2973,11 @@ fn run_claude(
     }
 
     let mut command = claude_command();
-    command.args(claude_args(agent_mode));
+    command.args(claude_args(agent_mode, model));
+    if let Some(server) = &approval_server {
+        command.args(["--setting-sources", "user"]);
+        command.arg("--settings").arg(server.settings_json()?);
+    }
     if let Some(staging) = &staging {
         command.args(["--add-dir", staging.path.to_string_lossy().as_ref()]);
     }
@@ -914,41 +2989,254 @@ fn run_claude(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .group_spawn()
         .map_err(|error| {
             format!(
                 "Не вдалося запустити Claude Code CLI. Перевірте встановлення Claude Code: {error}"
             )
         })?;
-
-    child
+    let mut stdin = child
+        .inner()
         .stdin
         .take()
-        .ok_or_else(|| "Не вдалося передати запит Claude Code.".to_owned())?
-        .write_all(prompt.as_bytes())
-        .map_err(|error| format!("Не вдалося передати запит Claude Code: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Не вдалося отримати відповідь Claude Code: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    } else {
-        let details = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        Err(if details.is_empty() {
-            format!("Claude Code завершився з кодом {}.", output.status)
-        } else {
-            details
-        })
+        .ok_or_else(|| "Claude Code не відкрив stdin для запиту.".to_owned())?;
+    let stdout = child
+        .inner()
+        .stdout
+        .take()
+        .ok_or_else(|| "Claude Code не відкрив stdout для потоку відповіді.".to_owned())?;
+    let stderr = child
+        .inner()
+        .stderr
+        .take()
+        .ok_or_else(|| "Claude Code не відкрив stderr для діагностики.".to_owned())?;
+    {
+        let mut running = active_child
+            .lock()
+            .map_err(|_| "Не вдалося зберегти процес Claude Code для керування.".to_owned())?;
+        *running = Some(child);
     }
+
+    let stderr_reader = thread::spawn(move || read_bounded_stderr(stderr));
+    if let Err(error) = stdin.write_all(prompt.as_bytes()) {
+        let stop_result = stop_active_child(active_child);
+        let wait_result = wait_active_child(active_child);
+        let stderr_error = match stderr_reader.join() {
+            Ok(Ok(_)) => String::new(),
+            Ok(Err(error)) => format!("; не вдалося прочитати stderr: {error}"),
+            Err(_) => "; не вдалося завершити читання stderr.".to_owned(),
+        };
+        return Err(format!(
+            "Не вдалося передати запит Claude Code: {error}{}{}{}",
+            stop_result
+                .err()
+                .map(|message| format!("; {message}"))
+                .unwrap_or_default(),
+            wait_result
+                .err()
+                .map(|message| format!("; {message}"))
+                .unwrap_or_default(),
+            stderr_error
+        ));
+    }
+    drop(stdin);
+
+    let mut stop_error = if cancel_requested.load(Ordering::SeqCst) {
+        stop_active_child(active_child).err()
+    } else {
+        None
+    };
+
+    let mut streamed_text = String::new();
+    let mut final_text = None;
+    let mut stream_error = None;
+    let mut stdout = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match stdout.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => match parse_claude_stream_event(&line) {
+                Ok(Some(ClaudeStreamEvent::Text(text))) => {
+                    streamed_text.push_str(&text);
+                    let _ = stream_tx.send(ClaudeStreamChunk {
+                        project_id: project_id.to_owned(),
+                        chat_id: chat_id.to_owned(),
+                        update: ClaudeStreamUpdate::Text(text),
+                    });
+                }
+                Ok(Some(ClaudeStreamEvent::Tool(tool))) => {
+                    let _ = stream_tx.send(ClaudeStreamChunk {
+                        project_id: project_id.to_owned(),
+                        chat_id: chat_id.to_owned(),
+                        update: ClaudeStreamUpdate::Tool(tool),
+                    });
+                }
+                Ok(Some(ClaudeStreamEvent::Result(text))) => final_text = Some(text),
+                Ok(None) => {}
+                Err(error) => {
+                    stream_error = Some(error);
+                    break;
+                }
+            },
+            Err(error) => {
+                stream_error = Some(format!("Не вдалося прочитати потік Claude Code: {error}"));
+                break;
+            }
+        }
+    }
+
+    let cancelled = cancel_requested.load(Ordering::SeqCst);
+    if cancelled || stream_error.is_some() {
+        if let Err(error) = stop_active_child(active_child) {
+            stop_error = Some(error);
+        }
+    }
+    let status = wait_active_child(active_child)?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "Не вдалося завершити читання діагностики Claude Code.".to_owned())?
+        .map_err(|error| format!("Не вдалося прочитати діагностику Claude Code: {error}"))?;
+
+    if cancelled {
+        if let Some(error) = stop_error {
+            return Err(format!(
+                "Запит скасовано, але зупинити процес не вдалося: {error}"
+            ));
+        }
+        return Err("Запит скасовано.".to_owned());
+    }
+    if let Some(error) = stream_error {
+        return Err(error);
+    }
+    if !status.success() {
+        return Err(if stderr.trim().is_empty() {
+            format!("Claude Code завершився з кодом {status}.")
+        } else {
+            stderr.trim().to_owned()
+        });
+    }
+    Ok(final_text.unwrap_or(streamed_text).trim().to_owned())
 }
 
-fn claude_args(agent_mode: AgentMode) -> Vec<&'static str> {
+enum ClaudeStreamEvent {
+    Text(String),
+    Tool(String),
+    Result(String),
+}
+
+fn parse_claude_stream_event(line: &str) -> Result<Option<ClaudeStreamEvent>, String> {
+    let event: serde_json::Value = serde_json::from_str(line)
+        .map_err(|_| "Claude Code повернув некоректну подію stream-json.".to_owned())?;
+    match event.get("type").and_then(serde_json::Value::as_str) {
+        Some("stream_event") => {
+            let stream_event = event.get("event");
+            let stream_event_type = stream_event
+                .and_then(|event| event.get("type"))
+                .and_then(serde_json::Value::as_str);
+            if stream_event_type == Some("content_block_start") {
+                let content_block = stream_event.and_then(|event| event.get("content_block"));
+                if content_block
+                    .and_then(|block| block.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("tool_use")
+                {
+                    let name = content_block
+                        .and_then(|block| block.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            "Claude Code надіслав виклик інструмента без назви.".to_owned()
+                        })?;
+                    return Ok(Some(ClaudeStreamEvent::Tool(name.to_owned())));
+                }
+            }
+            let delta = stream_event.and_then(|event| event.get("delta"));
+            if delta
+                .and_then(|delta| delta.get("type"))
+                .and_then(serde_json::Value::as_str)
+                == Some("text_delta")
+            {
+                let text = delta
+                    .and_then(|delta| delta.get("text"))
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Claude Code надіслав текстову подію без поля text.".to_owned()
+                    })?;
+                return Ok(Some(ClaudeStreamEvent::Text(text.to_owned())));
+            }
+        }
+        Some("result") => {
+            let text = event
+                .get("result")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "Claude Code надіслав result без тексту.".to_owned())?;
+            return Ok(Some(ClaudeStreamEvent::Result(text.to_owned())));
+        }
+        _ => {}
+    }
+    Ok(None)
+}
+
+fn read_bounded_stderr(mut reader: impl Read) -> std::io::Result<String> {
+    const MAX_STDERR_BYTES: usize = 1024 * 1024;
+    const BUFFER_SIZE: usize = 8192;
+    let mut output = Vec::new();
+    let mut buffer = [0; BUFFER_SIZE];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_STDERR_BYTES.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    let mut text = String::from_utf8_lossy(&output).into_owned();
+    if truncated {
+        text.push_str("\n[stderr обрізано після 1 МБ]");
+    }
+    Ok(text)
+}
+
+fn stop_active_child(active_child: &Arc<Mutex<Option<GroupChild>>>) -> Result<(), String> {
+    let mut active_child = active_child
+        .lock()
+        .map_err(|_| "Не вдалося отримати доступ до процесу Claude Code.".to_owned())?;
+    if let Some(child) = active_child.as_mut() {
+        if let Err(error) = child.kill() {
+            if error.kind() != std::io::ErrorKind::InvalidInput {
+                return Err(format!("Не вдалося зупинити Claude Code: {error}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn wait_active_child(
+    active_child: &Arc<Mutex<Option<GroupChild>>>,
+) -> Result<std::process::ExitStatus, String> {
+    let mut active_child = active_child
+        .lock()
+        .map_err(|_| "Не вдалося отримати процес Claude Code для завершення.".to_owned())?;
+    let mut child = active_child
+        .take()
+        .ok_or_else(|| "Процес Claude Code було втрачено до завершення.".to_owned())?;
+    drop(active_child);
+    child
+        .wait()
+        .map_err(|error| format!("Не вдалося дочекатися завершення Claude Code: {error}"))
+}
+
+fn claude_args(agent_mode: AgentMode, model: ClaudeModel) -> Vec<&'static str> {
     let mut args = vec![
         "-p",
         "--output-format",
-        "text",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
         "--model",
-        "claude-sonnet-4-6",
+        model.cli_alias(),
         "--permission-mode",
     ];
     match agent_mode {
@@ -956,7 +3244,7 @@ fn claude_args(agent_mode: AgentMode) -> Vec<&'static str> {
             args.extend(["plan", "--tools", "Read,Glob,Grep"]);
         }
         AgentMode::Turbo => {
-            args.extend(["acceptEdits", "--tools", "Read,Glob,Grep,Edit,Write"]);
+            args.extend(["manual", "--tools", "Read,Glob,Grep,Edit,Write"]);
         }
     }
     args
@@ -1308,7 +3596,60 @@ fn claude_command() -> Command {
     Command::new("claude")
 }
 
+fn run_approval_hook(address: &str, token: &str) -> Result<(), String> {
+    let address: SocketAddr = address
+        .parse()
+        .map_err(|error| format!("Некоректна адреса підтвердження Mnemosyne: {error}"))?;
+    let mut input = Vec::new();
+    std::io::stdin()
+        .take((MAX_APPROVAL_HOOK_BYTES + 1) as u64)
+        .read_to_end(&mut input)
+        .map_err(|error| format!("Не вдалося прочитати запит Claude Code: {error}"))?;
+    if input.len() > MAX_APPROVAL_HOOK_BYTES {
+        return Err("Запит Claude Code перевищує допустимий розмір.".to_owned());
+    }
+    let input: serde_json::Value = serde_json::from_slice(&input)
+        .map_err(|error| format!("Claude Code надіслав некоректний запит: {error}"))?;
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "token": token,
+        "input": input
+    }))
+    .map_err(|error| format!("Не вдалося підготувати запит підтвердження: {error}"))?;
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+        .map_err(|error| format!("Не вдалося зв'язатися з Mnemosyne: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(605)))
+        .map_err(|error| format!("Не вдалося налаштувати очікування рішення: {error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("Не вдалося налаштувати передавання рішення: {error}"))?;
+    write_approval_frame(&mut stream, &payload)
+        .map_err(|error| format!("Не вдалося передати запит підтвердження: {error}"))?;
+    let response = read_approval_frame(&mut stream, MAX_APPROVAL_RESPONSE_BYTES)?;
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(&response)
+        .and_then(|_| stdout.write_all(b"\n"))
+        .map_err(|error| format!("Не вдалося повернути рішення Claude Code: {error}"))
+}
+
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--mnemosyne-approval-hook") {
+        let Some(address) = args.get(1) else {
+            eprintln!("Не вказано адресу перевірки змін.");
+            std::process::exit(2);
+        };
+        let Some(token) = args.get(2) else {
+            eprintln!("Не вказано токен перевірки змін.");
+            std::process::exit(2);
+        };
+        if let Err(error) = run_approval_hook(address, token) {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 760.0])
@@ -1325,6 +3666,22 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temporary_project() -> PathBuf {
+        std::env::temp_dir().join(format!("mnemosyne-test-{}", Uuid::new_v4()))
+    }
+
+    fn call_approval_hook(server: &ApprovalServer, input: serde_json::Value) -> serde_json::Value {
+        let mut stream = TcpStream::connect(server.address).unwrap();
+        let request = serde_json::to_vec(&serde_json::json!({
+            "token": server.token,
+            "input": input
+        }))
+        .unwrap();
+        write_approval_frame(&mut stream, &request).unwrap();
+        let response = read_approval_frame(&mut stream, MAX_APPROVAL_RESPONSE_BYTES).unwrap();
+        serde_json::from_slice(&response).unwrap()
+    }
 
     #[test]
     fn allows_http_only_for_loopback_free_llm_api() {
@@ -1369,11 +3726,255 @@ mod tests {
     }
 
     #[test]
-    fn turbo_mode_allows_file_edits_but_not_shell_commands() {
-        let args = claude_args(AgentMode::Turbo);
+    fn parses_claude_stream_deltas_and_final_result() {
+        let delta = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "hello"}
+            }
+        })
+        .to_string();
+        assert!(matches!(
+            parse_claude_stream_event(&delta).unwrap(),
+            Some(ClaudeStreamEvent::Text(text)) if text == "hello"
+        ));
+
+        let tool = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_use", "name": "Read"}
+            }
+        })
+        .to_string();
+        assert!(matches!(
+            parse_claude_stream_event(&tool).unwrap(),
+            Some(ClaudeStreamEvent::Tool(name)) if name == "Read"
+        ));
+
+        let result = serde_json::json!({"type": "result", "result": "hello world"}).to_string();
+        assert!(matches!(
+            parse_claude_stream_event(&result).unwrap(),
+            Some(ClaudeStreamEvent::Result(text)) if text == "hello world"
+        ));
+        assert!(
+            parse_claude_stream_event(r#"{"type":"system","subtype":"init"}"#)
+                .unwrap()
+                .is_none()
+        );
+        assert!(parse_claude_stream_event("not-json").is_err());
+    }
+
+    #[test]
+    fn can_terminate_the_claude_process_group() {
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/C", "ping -n 20 127.0.0.1 >NUL"]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 20"]);
+            command
+        };
+        let mut child = command.group_spawn().unwrap();
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn claude_model_selection_uses_supported_aliases() {
+        for (model, expected) in [
+            (ClaudeModel::Sonnet, "sonnet"),
+            (ClaudeModel::Opus, "opus"),
+            (ClaudeModel::Haiku, "haiku"),
+        ] {
+            let args = claude_args(AgentMode::Plan, model);
+            let model_flag = args.iter().position(|arg| *arg == "--model").unwrap();
+            assert_eq!(args[model_flag + 1], expected);
+        }
+    }
+
+    #[test]
+    fn older_state_files_get_default_agent_model_and_context_settings() {
+        let state: AppState = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
+        assert_eq!(state.claude_model, ClaudeModel::Sonnet);
+        assert_eq!(state.context_limit, ConversationContextLimit::Last20Turns);
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file_and_leaves_no_temporary_file() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("state.json");
+        fs::write(&path, "old state").unwrap();
+
+        atomic_write(&path, b"new state").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"new state");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn context_limit_keeps_recent_user_turns_without_deleting_history() {
+        let mut messages = Vec::new();
+        for turn in 1..=7 {
+            messages.push(Message {
+                role: MessageRole::User,
+                content: format!("Запит {turn}"),
+                attachments: Vec::new(),
+                created_at: Local::now(),
+            });
+            if turn < 7 {
+                messages.push(Message {
+                    role: MessageRole::Assistant,
+                    content: format!("Відповідь {turn}"),
+                    attachments: Vec::new(),
+                    created_at: Local::now(),
+                });
+            }
+        }
+
+        let recent = conversation_context(&messages, ConversationContextLimit::Last5Turns);
+        assert_eq!(recent.first().unwrap().content, "Запит 3");
+        assert_eq!(recent.last().unwrap().content, "Запит 7");
+        assert_eq!(recent.len(), 9);
+        assert_eq!(
+            conversation_context(&messages, ConversationContextLimit::All).len(),
+            messages.len()
+        );
+        assert_eq!(messages.len(), 13);
+    }
+
+    #[test]
+    fn validates_renamed_chat_titles() {
+        assert_eq!(
+            normalize_chat_title("  Feature design  ").unwrap(),
+            "Feature design"
+        );
+        assert!(normalize_chat_title("   ").is_err());
+        assert!(normalize_chat_title(&"x".repeat(81)).is_err());
+        assert!(normalize_chat_title(&"x".repeat(80)).is_ok());
+    }
+
+    #[test]
+    fn removes_only_the_requested_chat() {
+        let mut project = Project {
+            id: "project".to_owned(),
+            name: "Project".to_owned(),
+            path: PathBuf::new(),
+            chats: ["keep", "remove"]
+                .into_iter()
+                .map(|id| Chat {
+                    id: id.to_owned(),
+                    title: id.to_owned(),
+                    messages: Vec::new(),
+                })
+                .collect(),
+        };
+
+        assert!(remove_chat_from_project(&mut project, "remove"));
+        assert_eq!(project.chats.len(), 1);
+        assert_eq!(project.chats[0].id, "keep");
+        assert!(!remove_chat_from_project(&mut project, "missing"));
+    }
+
+    #[test]
+    fn clearing_chat_history_keeps_chat_and_title() {
+        let mut project = Project {
+            id: "project".to_owned(),
+            name: "Project".to_owned(),
+            path: PathBuf::new(),
+            chats: vec![Chat {
+                id: "chat".to_owned(),
+                title: "Keep this title".to_owned(),
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "Remove this message".to_owned(),
+                    attachments: vec![PathBuf::from("image.png")],
+                    created_at: Local::now(),
+                }],
+            }],
+        };
+
+        assert!(clear_chat_messages(&mut project, "chat"));
+        assert_eq!(project.chats.len(), 1);
+        assert_eq!(project.chats[0].title, "Keep this title");
+        assert!(project.chats[0].messages.is_empty());
+        assert!(!clear_chat_messages(&mut project, "missing"));
+    }
+
+    #[test]
+    fn exports_chat_content_and_attachment_names_without_source_paths() {
+        let chat = Chat {
+            id: "chat".to_owned(),
+            title: "Feature plan".to_owned(),
+            messages: vec![
+                Message {
+                    role: MessageRole::User,
+                    content: "Review this screenshot.".to_owned(),
+                    attachments: vec![PathBuf::from("private/source/screen.png")],
+                    created_at: Local::now(),
+                },
+                Message {
+                    role: MessageRole::Assistant,
+                    content: "## Findings\n\nLooks good.".to_owned(),
+                    attachments: Vec::new(),
+                    created_at: Local::now(),
+                },
+            ],
+        };
+
+        let export = chat_export_markdown(&chat);
+        assert!(export.starts_with("# Feature plan"));
+        assert!(export.contains("Review this screenshot."));
+        assert!(export.contains("`screen.png`"));
+        assert!(export.contains("## Claude"));
+        assert!(export.contains("## Findings"));
+        assert!(!export.contains("private/source"));
+    }
+
+    #[test]
+    fn removing_project_record_keeps_next_project_and_chat_selected() {
+        let project = |id: &str, chat_id: &str| Project {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            path: PathBuf::from(format!("projects/{id}")),
+            chats: vec![Chat {
+                id: chat_id.to_owned(),
+                title: chat_id.to_owned(),
+                messages: Vec::new(),
+            }],
+        };
+        let mut state = AppState {
+            projects: vec![
+                project("first", "first-chat"),
+                project("second", "second-chat"),
+            ],
+            selected_project: Some("first".to_owned()),
+            selected_chat: Some("first-chat".to_owned()),
+            ..AppState::default()
+        };
+
+        assert!(remove_project_record(&mut state, "first"));
+        assert_eq!(state.projects.len(), 1);
+        assert_eq!(state.projects[0].path, PathBuf::from("projects/second"));
+        assert_eq!(state.selected_project.as_deref(), Some("second"));
+        assert_eq!(state.selected_chat.as_deref(), Some("second-chat"));
+        assert!(!remove_project_record(&mut state, "missing"));
+    }
+
+    #[test]
+    fn turbo_mode_requires_manual_permission_and_exposes_only_file_edit_tools() {
+        let args = claude_args(AgentMode::Turbo, ClaudeModel::Sonnet);
+        assert!(args.contains(&"--output-format"));
+        assert!(args.contains(&"stream-json"));
+        assert!(args.contains(&"--verbose"));
+        assert!(args.contains(&"--include-partial-messages"));
         assert!(args
             .windows(2)
-            .any(|pair| pair == ["--permission-mode", "acceptEdits"]));
+            .any(|pair| pair == ["--permission-mode", "manual"]));
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--tools", "Read,Glob,Grep,Edit,Write"]));
@@ -1382,7 +3983,7 @@ mod tests {
 
     #[test]
     fn plan_mode_remains_read_only() {
-        let args = claude_args(AgentMode::Plan);
+        let args = claude_args(AgentMode::Plan, ClaudeModel::Sonnet);
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--permission-mode", "plan"]));
@@ -1392,6 +3993,261 @@ mod tests {
         assert!(!args
             .iter()
             .any(|arg| arg.contains("Edit") || arg.contains("Write")));
+    }
+
+    #[test]
+    fn approval_paths_are_confined_to_project_and_attachment_roots() {
+        let root = temporary_project();
+        let project = root.join("project");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::create_dir_all(&attachments).unwrap();
+        fs::write(project.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(attachments.join("image.png"), b"image").unwrap();
+        let project = project.canonicalize().unwrap();
+        let attachments = attachments.canonicalize().unwrap();
+
+        assert_eq!(
+            project_relative_write_path(&project, "src/main.rs", Some(&project)).unwrap(),
+            PathBuf::from("src/main.rs")
+        );
+        assert_eq!(
+            path_within_roots(
+                &[project.clone(), attachments.clone()],
+                "image.png",
+                Some(&attachments)
+            )
+            .unwrap()
+            .0,
+            1
+        );
+        assert!(project_relative_write_path(&project, "../outside.txt", Some(&project)).is_err());
+        assert!(project_relative_write_path(
+            &project,
+            root.join("outside.txt").to_str().unwrap(),
+            Some(&project)
+        )
+        .is_err());
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let link = project.join("escape");
+        #[cfg(unix)]
+        let link_result = std::os::unix::fs::symlink(&outside, &link);
+        #[cfg(windows)]
+        let link_result = std::os::windows::fs::symlink_dir(&outside, &link);
+        if link_result.is_ok() {
+            assert!(
+                project_relative_write_path(&project, "escape/new.rs", Some(&project)).is_err()
+            );
+            fs::remove_dir(&link).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn edit_approval_preview_shows_replacement_and_bounds_large_content() {
+        let preview = file_change_preview(
+            "Edit",
+            &serde_json::json!({"old_string":"before", "new_string":"after"}),
+        );
+        assert!(preview.contains("--- було\nbefore"));
+        assert!(preview.contains("+++ стане\nafter"));
+
+        let large =
+            file_change_preview("Write", &serde_json::json!({"content":"x".repeat(12_100)}));
+        assert!(large.contains("попередній перегляд обрізано"));
+        assert!(large.len() < 13_000);
+    }
+
+    #[test]
+    fn approval_server_requires_user_decision_for_project_file_edits() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.rs"), "old").unwrap();
+        let (approval_tx, approval_rx) = mpsc::channel();
+        let server = ApprovalServer::start(
+            &root,
+            None,
+            AgentMode::Turbo,
+            approval_tx,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let mut stream = TcpStream::connect(server.address).unwrap();
+        let request = serde_json::to_vec(&serde_json::json!({
+            "token": server.token,
+            "input": {
+                "cwd": root.to_string_lossy(),
+                "tool_name": "Edit",
+                "tool_input": {
+                    "file_path": root.join("main.rs").to_string_lossy(),
+                    "old_string": "old",
+                    "new_string": "new"
+                }
+            }
+        }))
+        .unwrap();
+        write_approval_frame(&mut stream, &request).unwrap();
+
+        let approval = approval_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(approval.tool, "Edit");
+        assert_eq!(approval.path, "main.rs");
+        assert!(approval.preview.contains("new"));
+        approval.response_tx.send(true).unwrap();
+        let response = read_approval_frame(&mut stream, MAX_APPROVAL_RESPONSE_BYTES).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(
+            response["hookSpecificOutput"]["permissionDecision"],
+            "allow"
+        );
+        drop(server);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn approval_hook_denies_writes_in_plan_mode_and_unknown_tools() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        let (approval_tx, approval_rx) = mpsc::channel();
+        let server = ApprovalServer::start(
+            &root,
+            None,
+            AgentMode::Plan,
+            approval_tx,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(&server.settings_json().unwrap()).unwrap();
+        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "*");
+
+        for tool in ["Write", "Bash"] {
+            let response = call_approval_hook(
+                &server,
+                serde_json::json!({
+                    "cwd": root.to_string_lossy(),
+                    "tool_name": tool,
+                    "tool_input": {"file_path": root.join("new.txt").to_string_lossy()}
+                }),
+            );
+            assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "deny");
+        }
+        assert!(approval_rx.try_recv().is_err());
+        drop(server);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opens_and_saves_text_files_inside_the_project() {
+        let root = temporary_project();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/plan.md"), "# Plan\n").unwrap();
+
+        assert_eq!(
+            read_project_text_file(&root, Path::new("docs/plan.md")).unwrap(),
+            "# Plan\n"
+        );
+        save_project_text_file(&root, Path::new("docs/plan.md"), "# Updated\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("docs/plan.md")).unwrap(),
+            "# Updated\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refuses_project_file_traversal_and_unsupported_types() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("app.exe"), b"binary").unwrap();
+
+        assert!(read_project_text_file(&root, Path::new("../outside.md")).is_err());
+        assert!(read_project_text_file(&root, Path::new("app.exe")).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn decodes_supported_project_images_for_in_app_viewing() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("cover.png");
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([20, 40, 60, 255]))
+            .save_with_format(&image_path, image::ImageFormat::Png)
+            .unwrap();
+
+        let (image, width, height) =
+            read_project_image_file(&root, Path::new("cover.png")).unwrap();
+        assert_eq!((width, height), (2, 3));
+        assert_eq!(image.size, [2, 3]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lists_project_files_without_build_and_dependency_directories() {
+        let root = temporary_project();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("target/debug/generated"), "ignored").unwrap();
+
+        let listing = list_project_files(&root).unwrap();
+        assert_eq!(listing.files, vec![PathBuf::from("src/main.rs")]);
+        assert!(!listing.truncated);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filters_project_files_case_insensitively() {
+        let path = Path::new("Docs/Plans/Release-Plan.MD");
+        assert!(project_file_matches_filter(path, "release-plan"));
+        assert!(project_file_matches_filter(path, "  DOCS/PLANS "));
+        assert!(!project_file_matches_filter(path, "report"));
+        assert!(project_file_matches_filter(path, " "));
+    }
+
+    #[test]
+    fn parses_markdown_blocks_for_preview() {
+        let blocks = markdown_blocks(
+            "# Release\n\n- first\n- second\n\n> quoted text\n\n```rust\nlet ready = true;\n```\n\n| name | state |\n| --- | --- |\n| build | done |\n",
+        );
+        assert!(blocks.contains(&MarkdownBlock {
+            kind: MarkdownBlockKind::Heading(HeadingLevel::H1),
+            text: "Release".to_owned(),
+        }));
+        assert!(blocks.contains(&MarkdownBlock {
+            kind: MarkdownBlockKind::ListItem,
+            text: "• first".to_owned(),
+        }));
+        assert!(blocks.contains(&MarkdownBlock {
+            kind: MarkdownBlockKind::Quote,
+            text: "> quoted text".to_owned(),
+        }));
+        assert!(blocks.contains(&MarkdownBlock {
+            kind: MarkdownBlockKind::Code,
+            text: "let ready = true;\n".to_owned(),
+        }));
+        assert!(blocks.iter().any(|block| {
+            block.kind == MarkdownBlockKind::TableRow && block.text.contains("name │ state")
+        }));
+    }
+
+    #[test]
+    fn creates_plan_and_report_documents_inside_the_project() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+
+        let plan = create_project_markdown_document(&root, ProjectDocumentKind::Plan).unwrap();
+        let report = create_project_markdown_document(&root, ProjectDocumentKind::Report).unwrap();
+        assert!(plan.starts_with(Path::new("docs/plans")));
+        assert!(report.starts_with(Path::new("docs/reports")));
+        assert!(read_project_text_file(&root, &plan)
+            .unwrap()
+            .contains("Критерії готовності"));
+        assert!(read_project_text_file(&root, &report)
+            .unwrap()
+            .contains("Виконані зміни"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

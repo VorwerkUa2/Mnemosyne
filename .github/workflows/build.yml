@@ -60,17 +60,51 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Validate Linux installer scripts
+        if: runner.os == 'Linux'
+        run: |
+          sh -n packaging/linux/install.sh
+          sh -n packaging/linux/uninstall.sh
+
       - name: Run tests
         run: cargo test --locked
 
       - name: Build release
         run: cargo build --release --locked
 
-      - name: Upload build artifact
+      - name: Package Windows user installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'mnemosyne-windows'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item target/release/mnemosyne.exe $package
+          Copy-Item README.md $package
+          Copy-Item packaging/windows/install.ps1 $package
+          Copy-Item packaging/windows/uninstall.ps1 $package
+          Compress-Archive -Path (Join-Path $package '*') -DestinationPath (Join-Path $env:RUNNER_TEMP 'mnemosyne-windows-x86_64.zip')
+
+      - name: Package Linux user installer
+        if: runner.os == 'Linux'
+        run: |
+          package="$RUNNER_TEMP/mnemosyne-linux-x86_64"
+          mkdir -p "$package"
+          cp target/release/mnemosyne README.md packaging/linux/install.sh packaging/linux/uninstall.sh "$package/"
+          chmod +x "$package/mnemosyne" "$package/install.sh" "$package/uninstall.sh"
+          tar -czf "$RUNNER_TEMP/mnemosyne-linux-x86_64.tar.gz" -C "$RUNNER_TEMP" mnemosyne-linux-x86_64
+
+      - name: Upload Windows package
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: mnemosyne-${{ runner.os }}
-          path: |
-            target/release/mnemosyne
-            target/release/mnemosyne.exe
+          name: mnemosyne-windows-x86_64
+          path: ${{ runner.temp }}/mnemosyne-windows-x86_64.zip
+          if-no-files-found: error
+
+      - name: Upload Linux package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnemosyne-linux-x86_64
+          path: ${{ runner.temp }}/mnemosyne-linux-x86_64.tar.gz
           if-no-files-found: error
