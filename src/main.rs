@@ -1945,9 +1945,9 @@ impl eframe::App for MnemosyneApp {
                         self.run_plugin_action(action, plugin_id);
                     }
                 }
-                if let Some((add, target, label)) = requested_marketplace_action {
-                    self.pending_marketplace_action = Some((add, target, label));
-                }
+            }
+            if let Some((add, target, label)) = requested_marketplace_action {
+                self.pending_marketplace_action = Some((add, target, label));
             }
         }
 
