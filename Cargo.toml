@@ -1,0 +1,17 @@
+[package]
+name = "mnemosyne"
+version = "0.1.0"
+edition = "2021"
+description = "A cross-platform desktop workspace for Claude Code"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+eframe = "0.31"
+keyring = { version = "3", default-features = false, features = ["windows-native", "linux-native"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
