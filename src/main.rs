@@ -4833,12 +4833,18 @@ fn run_claude(
     );
     let mut args: Vec<String> = claude_args(agent_mode, model).into_iter().map(String::from).collect();
     if let Some(custom) = custom_model.filter(|s| !s.trim().is_empty()) {
-        if let Some(pos) = args.iter().position(|a| a == "--model") {
-            if pos + 1 < args.len() {
-                args[pos + 1] = custom.to_string();
+        let is_valid_claude_cli_model = matches!(
+            custom.to_lowercase().as_str(),
+            "sonnet" | "opus" | "haiku" | "default"
+        ) || custom.starts_with("claude-");
+        if is_valid_claude_cli_model {
+            if let Some(pos) = args.iter().position(|a| a == "--model") {
+                if pos + 1 < args.len() {
+                    args[pos + 1] = custom.to_string();
+                }
+            } else {
+                args.extend(["--model".to_string(), custom.to_string()]);
             }
-        } else {
-            args.extend(["--model".to_string(), custom.to_string()]);
         }
     }
     if agent_mode == AgentMode::Turbo || mcp_config.is_some() {
