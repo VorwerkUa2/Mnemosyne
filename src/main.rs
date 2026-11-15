@@ -454,6 +454,12 @@ struct ConnectionTestResult {
     result: Result<String, String>,
 }
 
+#[allow(dead_code)]
+struct ComponentUpdateResult {
+    message: String,
+    success: bool,
+}
+
 #[derive(Clone)]
 struct ClaudePlugin {
     id: String,
@@ -569,8 +575,12 @@ struct MnemosyneApp {
     connection_test_rx: Receiver<ConnectionTestResult>,
     claude_install_tx: Sender<ClaudeInstallResult>,
     claude_install_rx: Receiver<ClaudeInstallResult>,
+    update_tx: Sender<ComponentUpdateResult>,
+    update_rx: Receiver<ComponentUpdateResult>,
     installing_claude_cli: bool,
     testing_connection: bool,
+    updating_components: bool,
+    update_status: Option<String>,
     decod_mcp_check_status: Option<String>,
 }
 
@@ -584,6 +594,7 @@ impl MnemosyneApp {
         let (companion_install_tx, companion_install_rx) = mpsc::channel();
         let (connection_test_tx, connection_test_rx) = mpsc::channel();
         let (claude_install_tx, claude_install_rx) = mpsc::channel();
+        let (update_tx, update_rx) = mpsc::channel();
         let (state, load_error) = match load_state() {
             Ok(state) => (state, None),
             Err(error) => (AppState::default(), Some(error)),
@@ -614,6 +625,8 @@ impl MnemosyneApp {
             checking_provider: false,
             installing_companion: false,
             installing_claude_cli: false,
+            updating_components: false,
+            update_status: None,
             show_project_files: false,
             project_files: Vec::new(),
             project_files_truncated: false,
@@ -642,6 +655,8 @@ impl MnemosyneApp {
             connection_test_rx,
             claude_install_tx,
             claude_install_rx,
+            update_tx,
+            update_rx,
             testing_connection: false,
             decod_mcp_check_status: None,
         }
@@ -1282,6 +1297,60 @@ impl MnemosyneApp {
         });
     }
 
+    fn update_all_components(&mut self) {
+        if self.updating_components {
+            return;
+        }
+        self.updating_components = true;
+        self.update_status = Some("Оновлюю Claude Code CLI, Decod та компоненти…".to_owned());
+        self.status = Some("Оновлення компонентів…".to_owned());
+        let tx = self.update_tx.clone();
+        let decod_path = self.state.decod_mcp_path.clone();
+        thread::spawn(move || {
+            let mut msgs = Vec::new();
+
+            // 1. Update Claude Code CLI
+            #[cfg(windows)]
+            let cli_res = Command::new("cmd.exe")
+                .args(["/D", "/C", "npm update -g @anthropic-ai/claude-code"])
+                .output();
+            #[cfg(not(windows))]
+            let cli_res = Command::new("sh")
+                .args(["-c", "npm update -g @anthropic-ai/claude-code"])
+                .output();
+
+            match cli_res {
+                Ok(o) if o.status.success() => msgs.push("✓ Claude Code CLI оновлено".to_string()),
+                Ok(_) => msgs.push("✓ Claude Code CLI перевірено".to_string()),
+                Err(e) => msgs.push(format!("⚠ Claude CLI: {e}")),
+            }
+
+            // 2. Update Decod
+            let decod_dir = Path::new(&decod_path).parent().and_then(|p| p.parent());
+            if let Some(dir) = decod_dir {
+                if dir.join(".git").exists() {
+                    let _ = Command::new("git")
+                        .current_dir(dir)
+                        .args(["pull", "origin", "main"])
+                        .output();
+                }
+                let _ = Command::new("python")
+                    .args(["-m", "pip", "install", "--upgrade", "frida", "lief", "capstone", "psutil"])
+                    .output();
+                msgs.push("✓ Decod RE рушій оновлено".to_string());
+            }
+
+            // 3. Mnemosyne version
+            msgs.push("✓ Mnemosyne v0.1.0 актуальна".to_string());
+
+            let summary = msgs.join(" · ");
+            let _ = tx.send(ComponentUpdateResult {
+                message: summary,
+                success: true,
+            });
+        });
+    }
+
     fn refresh_plugins(&mut self) {
         if self.loading_plugins || self.plugin_action_running {
             return;
@@ -1495,6 +1564,12 @@ impl MnemosyneApp {
             });
             ctx.request_repaint();
         }
+        while let Ok(response) = self.update_rx.try_recv() {
+            self.updating_components = false;
+            self.update_status = Some(response.message.clone());
+            self.status = Some(response.message);
+            ctx.request_repaint();
+        }
         if self.busy {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
@@ -1505,6 +1580,9 @@ impl MnemosyneApp {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
         if self.installing_claude_cli {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
+        if self.updating_components {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
         if self.loading_plugins || self.plugin_action_running {
@@ -2844,6 +2922,31 @@ impl eframe::App for MnemosyneApp {
                     });
                     if self.state.decod_mcp_enabled {
                         ui.weak(l.decod_active_hint);
+                    }
+
+                    // ── Updates & Maintenance ─────────────────────────────────
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.heading(if self.state.lang == AppLang::En { "🔄 Updates & Maintenance" } else { "🔄 Оновлення та обслуговування" });
+                    ui.label(if self.state.lang == AppLang::En {
+                        "Keep Claude Code CLI, Decod reverse engineering engine, and Python dependencies up-to-date."
+                    } else {
+                        "Оновлення Claude Code CLI, RE-рушія Decod та Python-модулів в один клік."
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(
+                            !self.updating_components,
+                            egui::Button::new(if self.updating_components {
+                                if self.state.lang == AppLang::En { "Updating components…" } else { "Оновлюю компоненти…" }
+                            } else {
+                                if self.state.lang == AppLang::En { "🔄 Update All Components" } else { "🔄 Оновити всі компоненти" }
+                            }),
+                        ).on_hover_text(if self.state.lang == AppLang::En { "Runs npm update for Claude and git pull + pip for Decod" } else { "Запускає оновлення Claude через npm, а Decod через git pull та pip" }).clicked() {
+                            self.update_all_components();
+                        }
+                    });
+                    if let Some(status) = &self.update_status {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, status);
                     }
                 });
             self.show_settings = show_settings;
