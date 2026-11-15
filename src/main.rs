@@ -133,6 +133,17 @@ struct L {
     pub auto_rules_success: &'static str,
     pub check_diagnostics_btn: &'static str,
     pub check_diagnostics_hint: &'static str,
+    // Local Model (LM Studio / Ollama)
+    pub local_model_section: &'static str,
+    pub local_model_enabled: &'static str,
+    pub local_model_url: &'static str,
+    pub local_model_name: &'static str,
+    pub local_model_name_hint: &'static str,
+    pub local_model_check: &'static str,
+    pub local_model_connected: &'static str,
+    pub local_model_disconnected: &'static str,
+    pub local_model_hint: &'static str,
+    pub local_model_pick: &'static str,
 }
 
 const UK: L = L {
@@ -212,6 +223,16 @@ const UK: L = L {
     auto_rules_success: "✓ Правила успішно створено у .claude/CLAUDE.md",
     check_diagnostics_btn: "🔍 Перевірити діагностику",
     check_diagnostics_hint: "Запуск перевірки синтаксису й компілятора (cargo check / pyright) без витрати токенів.",
+    local_model_section: "Локальна модель (LM Studio / Ollama)",
+    local_model_enabled: "Використовувати локальну модель замість FreeLLMAPI",
+    local_model_url: "URL сервера",
+    local_model_name: "Назва моделі",
+    local_model_name_hint: "напр. llama-3.2-3b-instruct або залиште порожнім",
+    local_model_check: "Знайти моделі",
+    local_model_connected: "✓ Підключено",
+    local_model_disconnected: "✗ Не підключено",
+    local_model_hint: "LM Studio: :1234  •  Ollama: :11434  •  OpenAI-сумісний API",
+    local_model_pick: "Вибрати модель:",
 };
 
 const EN: L = L {
@@ -291,6 +312,16 @@ const EN: L = L {
     auto_rules_success: "✓ Rules successfully written to .claude/CLAUDE.md",
     check_diagnostics_btn: "🔍 Check Diagnostics",
     check_diagnostics_hint: "Run compiler & syntax checks (cargo check / pyright) with 0 token cost.",
+    local_model_section: "Local Model (LM Studio / Ollama)",
+    local_model_enabled: "Use local model instead of FreeLLMAPI",
+    local_model_url: "Server URL",
+    local_model_name: "Model name",
+    local_model_name_hint: "e.g. llama-3.2-3b-instruct or leave empty",
+    local_model_check: "Discover models",
+    local_model_connected: "✓ Connected",
+    local_model_disconnected: "✗ Not connected",
+    local_model_hint: "LM Studio: :1234  •  Ollama: :11434  •  OpenAI-compatible API",
+    local_model_pick: "Select model:",
 };
 
 // ── App State ─────────────────────────────────────────────────────────────────
@@ -302,6 +333,8 @@ struct AppState {
     selected_project: Option<String>,
     selected_chat: Option<String>,
     freellmapi: FreeLlmApiSettings,
+    #[serde(default)]
+    local_model: LocalModelSettings,
     agent_mode: AgentMode,
     claude_model: ClaudeModel,
     context_limit: ConversationContextLimit,
@@ -335,6 +368,7 @@ impl Default for AppState {
             selected_project: None,
             selected_chat: None,
             freellmapi: FreeLlmApiSettings::default(),
+            local_model: LocalModelSettings::default(),
             agent_mode: AgentMode::Turbo,
             claude_model: ClaudeModel::Sonnet,
             context_limit: ConversationContextLimit::Last20Turns,
@@ -361,6 +395,28 @@ impl Default for FreeLlmApiSettings {
     fn default() -> Self {
         Self {
             base_url: "http://127.0.0.1:31415".to_owned(),
+            connected: false,
+            ready_models: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct LocalModelSettings {
+    enabled: bool,
+    base_url: String,
+    model_name: String,
+    connected: bool,
+    ready_models: Vec<String>,
+}
+
+impl Default for LocalModelSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: "http://localhost:1234".to_owned(),
+            model_name: String::new(),
             connected: false,
             ready_models: Vec::new(),
         }
@@ -608,6 +664,7 @@ struct MnemosyneApp {
     plugin_action_running: bool,
     freellmapi_key_draft: String,
     checking_provider: bool,
+    checking_local_model: bool,
     installing_companion: bool,
     show_project_files: bool,
     project_files: Vec<PathBuf>,
@@ -631,6 +688,8 @@ struct MnemosyneApp {
     plugin_manager_rx: Receiver<PluginManagerResult>,
     provider_check_tx: Sender<ProviderCheckResult>,
     provider_check_rx: Receiver<ProviderCheckResult>,
+    local_model_check_tx: Sender<ProviderCheckResult>,
+    local_model_check_rx: Receiver<ProviderCheckResult>,
     companion_install_tx: Sender<CompanionInstallResult>,
     companion_install_rx: Receiver<CompanionInstallResult>,
     connection_test_tx: Sender<ConnectionTestResult>,
@@ -657,6 +716,7 @@ impl MnemosyneApp {
         let (approval_tx, approval_rx) = mpsc::channel();
         let (plugin_manager_tx, plugin_manager_rx) = mpsc::channel();
         let (provider_check_tx, provider_check_rx) = mpsc::channel();
+        let (local_model_check_tx, local_model_check_rx) = mpsc::channel();
         let (companion_install_tx, companion_install_rx) = mpsc::channel();
         let (connection_test_tx, connection_test_rx) = mpsc::channel();
         let (claude_install_tx, claude_install_rx) = mpsc::channel();
@@ -690,6 +750,7 @@ impl MnemosyneApp {
             plugin_action_running: false,
             freellmapi_key_draft: String::new(),
             checking_provider: false,
+            checking_local_model: false,
             installing_companion: false,
             installing_claude_cli: false,
             updating_components: false,
@@ -716,6 +777,8 @@ impl MnemosyneApp {
             plugin_manager_rx,
             provider_check_tx,
             provider_check_rx,
+            local_model_check_tx,
+            local_model_check_rx,
             companion_install_tx,
             companion_install_rx,
             connection_test_tx,
@@ -1133,25 +1196,48 @@ impl MnemosyneApp {
             self.show_settings = true;
             return;
         }
-        let api_key = match load_freellmapi_key() {
-            Ok(Some(key)) => key,
-            Ok(None) => {
-                self.status = Some("Підключіть FreeLLMAPI у Налаштуваннях.".to_owned());
+        let (api_base_url, api_key, custom_model) = if self.state.local_model.enabled {
+            if !self.state.local_model.connected {
+                self.status = Some(if self.state.lang == AppLang::En {
+                    "Please verify local model connection in Settings first.".to_owned()
+                } else {
+                    "Спочатку перевірте підключення до локальної моделі у Налаштуваннях.".to_owned()
+                });
                 self.show_settings = true;
                 return;
             }
-            Err(error) => {
-                self.status = Some(error);
+            let custom = if self.state.local_model.model_name.trim().is_empty() {
+                None
+            } else {
+                Some(self.state.local_model.model_name.trim().to_owned())
+            };
+            (
+                self.state.local_model.base_url.clone(),
+                "local-model-token".to_owned(),
+                custom,
+            )
+        } else {
+            let key = match load_freellmapi_key() {
+                Ok(Some(key)) => key,
+                Ok(None) => {
+                    self.status = Some("Підключіть FreeLLMAPI у Налаштуваннях.".to_owned());
+                    self.show_settings = true;
+                    return;
+                }
+                Err(error) => {
+                    self.status = Some(error);
+                    self.show_settings = true;
+                    return;
+                }
+            };
+            if !self.state.freellmapi.connected {
+                self.status =
+                    Some("Спочатку перевірте підключення до FreeLLMAPI у Налаштуваннях.".to_owned());
                 self.show_settings = true;
                 return;
             }
+            (self.state.freellmapi.base_url.clone(), key, None)
         };
-        if !self.state.freellmapi.connected {
-            self.status =
-                Some("Спочатку перевірте підключення до FreeLLMAPI у Налаштуваннях.".to_owned());
-            self.show_settings = true;
-            return;
-        }
         let content = self.draft.trim().to_owned();
         if content.is_empty() && self.pending_attachments.is_empty() {
             return;
@@ -1193,7 +1279,6 @@ impl MnemosyneApp {
         chat.messages.push(message);
         let project_path = project.path.clone();
         let conversation = conversation_context(&chat.messages, self.state.context_limit).to_vec();
-        let api_base_url = self.state.freellmapi.base_url.clone();
         self.draft.clear();
         self.busy = true;
         self.streaming_content.clear();
@@ -1237,6 +1322,7 @@ impl MnemosyneApp {
                 &active_child,
                 &cancel_requested,
                 mcp_config,
+                custom_model.as_deref(),
             );
             let cancelled = cancel_requested.load(Ordering::SeqCst)
                 && matches!(&result, Err(error) if error == "Запит скасовано.");
@@ -1303,6 +1389,26 @@ impl MnemosyneApp {
         let tx = self.provider_check_tx.clone();
         thread::spawn(move || {
             let result = fetch_ready_models(&base_url, &api_key);
+            let _ = tx.send(ProviderCheckResult { base_url, result });
+        });
+    }
+
+    fn check_local_model(&mut self) {
+        let base_url = match normalize_api_base_url(&self.state.local_model.base_url) {
+            Ok(url) => url,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        self.state.local_model.base_url = base_url.clone();
+        self.state.local_model.connected = false;
+        self.state.local_model.ready_models.clear();
+        self.checking_local_model = true;
+        self.save();
+        let tx = self.local_model_check_tx.clone();
+        thread::spawn(move || {
+            let result = fetch_local_models(&base_url);
             let _ = tx.send(ProviderCheckResult { base_url, result });
         });
     }
@@ -1708,6 +1814,36 @@ impl MnemosyneApp {
             }
             ctx.request_repaint();
         }
+        while let Ok(response) = self.local_model_check_rx.try_recv() {
+            self.checking_local_model = false;
+            if self.state.local_model.base_url == response.base_url {
+                let status = match response.result {
+                    Ok(models) => {
+                        self.state.local_model.connected = true;
+                        let count = models.len();
+                        if self.state.local_model.model_name.is_empty() {
+                            if let Some(first) = models.first() {
+                                self.state.local_model.model_name = first.clone();
+                            }
+                        }
+                        self.state.local_model.ready_models = models;
+                        if self.state.lang == AppLang::En {
+                            format!("✓ Local model connected. Found {count} available models.")
+                        } else {
+                            format!("✓ Локальну модель підключено. Знайдено {count} доступних моделей.")
+                        }
+                    }
+                    Err(error) => {
+                        self.state.local_model.connected = false;
+                        self.state.local_model.ready_models.clear();
+                        error
+                    }
+                };
+                self.save();
+                self.status = Some(status);
+            }
+            ctx.request_repaint();
+        }
         while let Ok(response) = self.companion_install_rx.try_recv() {
             self.installing_companion = false;
             self.status = Some(match response.result {
@@ -1926,6 +2062,16 @@ impl eframe::App for MnemosyneApp {
                             AgentMode::Turbo => ("⚡ Turbo", egui::Color32::from_rgb(245, 160, 50)),
                         };
                         ui.colored_label(mode_col, mode_text);
+
+                        // Local model badge if active
+                        if self.state.local_model.enabled && self.state.local_model.connected {
+                            let label = if self.state.local_model.model_name.is_empty() {
+                                "🖥 Local".to_string()
+                            } else {
+                                format!("🖥 {}", self.state.local_model.model_name.chars().take(16).collect::<String>())
+                            };
+                            ui.colored_label(egui::Color32::from_rgb(100, 200, 255), label);
+                        }
                     });
                 });
             });
@@ -3146,6 +3292,93 @@ impl eframe::App for MnemosyneApp {
                             }
                         });
                     }
+
+                    ui.add_space(12.0);
+                    ui.separator();
+
+                    // ── Local Model (LM Studio / Ollama) ──────────────────────
+                    ui.heading(format!("🖥 {}", l.local_model_section));
+                    ui.checkbox(&mut self.state.local_model.enabled, l.local_model_enabled);
+                    ui.weak(l.local_model_hint);
+                    ui.add_space(4.0);
+
+                    ui.add_enabled_ui(self.state.local_model.enabled, |ui| {
+                        ui.label(l.local_model_url);
+                        ui.text_edit_singleline(&mut self.state.local_model.base_url);
+
+                        ui.horizontal(|ui| {
+                            ui.weak("Presets:");
+                            if ui.small_button("LM Studio (:1234)").clicked() {
+                                self.state.local_model.base_url = "http://localhost:1234".to_owned();
+                            }
+                            if ui.small_button("Ollama (:11434)").clicked() {
+                                self.state.local_model.base_url = "http://localhost:11434".to_owned();
+                            }
+                        });
+
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.checking_local_model,
+                                    egui::Button::new(if self.checking_local_model {
+                                        if self.state.lang == AppLang::En { "Scanning…" } else { "Сканую…" }
+                                    } else {
+                                        l.local_model_check
+                                    }),
+                                )
+                                .clicked()
+                            {
+                                self.check_local_model();
+                            }
+                        });
+
+                        if !self.state.local_model.ready_models.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(l.local_model_pick);
+                            let current_display = if self.state.local_model.model_name.is_empty() {
+                                if self.state.lang == AppLang::En { "— auto / loaded —" } else { "— авто / поточна —" }
+                            } else {
+                                self.state.local_model.model_name.as_str()
+                            };
+                            egui::ComboBox::from_id_salt("local_model_picker")
+                                .selected_text(current_display)
+                                .show_ui(ui, |ui| {
+                                    let auto_label = if self.state.lang == AppLang::En { "— auto / loaded —" } else { "— авто / поточна —" };
+                                    if ui.selectable_label(self.state.local_model.model_name.is_empty(), auto_label).clicked() {
+                                        self.state.local_model.model_name.clear();
+                                    }
+                                    for model_id in &self.state.local_model.ready_models {
+                                        let is_sel = self.state.local_model.model_name == *model_id;
+                                        if ui.selectable_label(is_sel, model_id).clicked() {
+                                            self.state.local_model.model_name = model_id.clone();
+                                        }
+                                    }
+                                });
+                        }
+
+                        ui.add_space(4.0);
+                        ui.label(l.local_model_name);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.state.local_model.model_name)
+                                .hint_text(l.local_model_name_hint),
+                        );
+
+                        if self.state.local_model.connected {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_GREEN,
+                                format!(
+                                    "{} · {} {}",
+                                    l.local_model_connected,
+                                    self.state.local_model.ready_models.len(),
+                                    if self.state.lang == AppLang::En { "models available" } else { "доступних моделей" }
+                                ),
+                            );
+                        } else {
+                            ui.weak(l.local_model_disconnected);
+                        }
+                    });
 
                     ui.add_space(12.0);
                     ui.separator();
@@ -4432,6 +4665,7 @@ fn run_claude(
     active_child: &Arc<Mutex<Option<GroupChild>>>,
     cancel_requested: &Arc<AtomicBool>,
     mcp_config: Option<String>,
+    custom_model: Option<&str>,
 ) -> Result<String, String> {
     let has_attachments = messages
         .iter()
@@ -4504,7 +4738,19 @@ fn run_claude(
     }
 
     let mut command = claude_command();
-    command.args(claude_args(agent_mode, model));
+    if let Some(custom) = custom_model.filter(|s| !s.trim().is_empty()) {
+        let mut args: Vec<String> = claude_args(agent_mode, model).into_iter().map(String::from).collect();
+        if let Some(pos) = args.iter().position(|a| a == "--model") {
+            if pos + 1 < args.len() {
+                args[pos + 1] = custom.to_string();
+            }
+        } else {
+            args.extend(["--model".to_string(), custom.to_string()]);
+        }
+        command.args(args);
+    } else {
+        command.args(claude_args(agent_mode, model));
+    }
     if let Some(server) = &approval_server {
         command.args(["--setting-sources", "user"]);
         command.arg("--settings").arg(server.settings_json()?);
@@ -4884,6 +5130,54 @@ fn parse_ready_models(body: &serde_json::Value) -> Result<Vec<String>, String> {
         .collect();
     if models.is_empty() {
         return Err("FreeLLMAPI не знайшов доступних моделей. Додайте ключі провайдерів і ввімкніть їх у fallback chain.".to_owned());
+    }
+    Ok(models)
+}
+
+fn fetch_local_models(base_url: &str) -> Result<Vec<String>, String> {
+    let url = format!("{base_url}/v1/models");
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|error| format!("Не вдалося створити HTTP-клієнт: {error}"))?
+        .get(url)
+        .header("User-Agent", "Mnemosyne")
+        .send()
+        .map_err(|error| {
+            format!(
+                "Не вдалося з'єднатися з локальним сервером ({base_url}). Переконайтеся, що LM Studio або Ollama запущені: {error}"
+            )
+        })?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Локальний сервер відповів HTTP {}. Перевірте URL та статус сервера.",
+            response.status()
+        ));
+    }
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|error| format!("Локальний сервер повернув некоректний JSON списку моделей: {error}"))?;
+    parse_local_models(&body)
+}
+
+fn parse_local_models(body: &serde_json::Value) -> Result<Vec<String>, String> {
+    let entries = body
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| body.as_array())
+        .ok_or_else(|| "Локальний сервер повернув каталог моделей у невідомому форматі.".to_owned())?;
+    let models: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| entry.get("name").and_then(serde_json::Value::as_str))
+                .map(str::to_owned)
+        })
+        .collect();
+    if models.is_empty() {
+        return Err("Сервер не повернув завантажених моделей. Завантажте модель у LM Studio або запустіть модель в Ollama.".to_owned());
     }
     Ok(models)
 }
@@ -6585,5 +6879,35 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(parsed["mcpServers"]["decod"]["command"].is_string());
         assert_eq!(parsed["mcpServers"]["decod"]["command"], "python");
+    }
+
+    #[test]
+    fn local_model_settings_defaults_and_serialization() {
+        let default_local = LocalModelSettings::default();
+        assert!(!default_local.enabled);
+        assert_eq!(default_local.base_url, "http://localhost:1234");
+        assert!(default_local.model_name.is_empty());
+        assert!(!default_local.connected);
+        assert!(default_local.ready_models.is_empty());
+
+        let state = AppState::default();
+        assert!(!state.local_model.enabled);
+        assert_eq!(state.local_model.base_url, "http://localhost:1234");
+    }
+
+    #[test]
+    fn parses_local_models_from_openai_compatible_response() {
+        let json_body = serde_json::json!({
+            "data": [
+                {"id": "llama-3.2-3b-instruct"},
+                {"id": "deepseek-coder-6.7b"},
+                {"id": "qwen2.5-coder-7b"}
+            ]
+        });
+        let models = parse_local_models(&json_body).unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0], "llama-3.2-3b-instruct");
+        assert_eq!(models[1], "deepseek-coder-6.7b");
+        assert_eq!(models[2], "qwen2.5-coder-7b");
     }
 }
