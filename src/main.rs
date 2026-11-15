@@ -5896,6 +5896,17 @@ fn run_approval_hook(address: &str, token: &str) -> Result<(), String> {    let 
         .map_err(|error| format!("Не вдалося повернути рішення Claude Code: {error}"))
 }
 
+fn load_app_icon() -> Option<egui::IconData> {
+    let png_bytes = include_bytes!("../assets/icon_32.png");
+    let img = image::load_from_memory(png_bytes).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--mnemosyne-approval-hook") {
@@ -5920,10 +5931,14 @@ fn main() -> eframe::Result<()> {
     if let Some(ref msg) = linux_desktop_warning {
         eprintln!("{msg}");
     }
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1100.0, 760.0])
+        .with_min_inner_size([720.0, 480.0]);
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 760.0])
-            .with_min_inner_size([720.0, 480.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
