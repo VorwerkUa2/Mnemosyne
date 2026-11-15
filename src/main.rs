@@ -4527,7 +4527,7 @@ fn handle_approval_connection(
         let tool_input = input
             .get("tool_input")
             .ok_or_else(|| "Не вдалося прочитати параметри інструмента Claude Code.".to_owned())?;
-        if matches!(tool, "Read" | "Glob" | "Grep") {
+        if tool != "Edit" && tool != "Write" && tool != "Bash" {
             return Ok(approval_decision(true, ""));
         }
         if !matches!(tool, "Edit" | "Write") || agent_mode != AgentMode::Turbo {
@@ -4730,6 +4730,13 @@ fn write_approval_frame(stream: &mut TcpStream, bytes: &[u8]) -> std::io::Result
     stream.write_all(bytes)
 }
 
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 fn run_claude(
     project_path: &Path,
     messages: &[Message],
@@ -4818,8 +4825,8 @@ fn run_claude(
 
     let mut command = claude_command();
     command.arg("--dangerously-skip-permissions");
+    let mut args: Vec<String> = claude_args(agent_mode, model).into_iter().map(String::from).collect();
     if let Some(custom) = custom_model.filter(|s| !s.trim().is_empty()) {
-        let mut args: Vec<String> = claude_args(agent_mode, model).into_iter().map(String::from).collect();
         if let Some(pos) = args.iter().position(|a| a == "--model") {
             if pos + 1 < args.len() {
                 args[pos + 1] = custom.to_string();
@@ -4827,10 +4834,16 @@ fn run_claude(
         } else {
             args.extend(["--model".to_string(), custom.to_string()]);
         }
-        command.args(args);
-    } else {
-        command.args(claude_args(agent_mode, model));
     }
+    if mcp_config.is_some() {
+        if let Some(pos) = args.iter().position(|a| a == "--tools") {
+            args.remove(pos);
+            if pos < args.len() {
+                args.remove(pos);
+            }
+        }
+    }
+    command.args(args);
     if let Some(server) = &approval_server {
         command.args(["--setting-sources", "user"]);
         command.arg("--settings").arg(server.settings_json(api_base_url, api_key)?);
@@ -4838,9 +4851,14 @@ fn run_claude(
     if let Some(staging) = &staging {
         command.args(["--add-dir", staging.path.to_string_lossy().as_ref()]);
     }
-    if let Some(mcp_json) = &mcp_config {
-        command.arg("--mcp-config").arg(mcp_json);
-    }
+    let _mcp_guard = if let Some(mcp_json) = &mcp_config {
+        let path = std::env::temp_dir().join(format!("mnemosyne-mcp-{}.json", Uuid::new_v4()));
+        let _ = fs::write(&path, mcp_json);
+        command.arg("--mcp-config").arg(&path);
+        Some(TempFileGuard(path))
+    } else {
+        None
+    };
     let mut child = command
         .current_dir(project_path)
         .env("ANTHROPIC_BASE_URL", api_base_url)
