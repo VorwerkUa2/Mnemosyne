@@ -4454,10 +4454,17 @@ impl ApprovalServer {
         })
     }
 
-    fn settings_json(&self) -> Result<String, String> {
+    fn settings_json(&self, api_base_url: &str, api_key: &str) -> Result<String, String> {
         let executable = std::env::current_exe()
             .map_err(|error| format!("Не вдалося визначити файл Mnemosyne: {error}"))?;
         Ok(serde_json::json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": api_base_url,
+                "ANTHROPIC_AUTH_TOKEN": api_key,
+                "ANTHROPIC_API_KEY": api_key,
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+            },
+            "apiKeyHelper": "",
             "hooks": {
                 "PreToolUse": [{
                     "matcher": "*",
@@ -4838,7 +4845,7 @@ fn run_claude(
     }
     if let Some(server) = &approval_server {
         command.args(["--setting-sources", "user"]);
-        command.arg("--settings").arg(server.settings_json()?);
+        command.arg("--settings").arg(server.settings_json(api_base_url, api_key)?);
     }
     if let Some(staging) = &staging {
         command.args(["--add-dir", staging.path.to_string_lossy().as_ref()]);
@@ -4991,8 +4998,14 @@ enum ClaudeStreamEvent {
 }
 
 fn parse_claude_stream_event(line: &str) -> Result<Option<ClaudeStreamEvent>, String> {
-    let event: serde_json::Value = serde_json::from_str(line)
-        .map_err(|_| "Claude Code повернув некоректну подію stream-json.".to_owned())?;
+    let trimmed = line.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('{') {
+        return Ok(None);
+    }
+    let event: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(val) => val,
+        Err(_) => return Ok(None),
+    };
     match event.get("type").and_then(serde_json::Value::as_str) {
         Some("stream_event") => {
             let stream_event = event.get("event");
@@ -6412,7 +6425,8 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(parse_claude_stream_event("not-json").is_err());
+        assert!(parse_claude_stream_event("not-json").unwrap().is_none());
+        assert!(parse_claude_stream_event("{ invalid json }").unwrap().is_none());
     }
 
     #[test]
@@ -6770,8 +6784,9 @@ mod tests {
         )
         .unwrap();
         let settings: serde_json::Value =
-            serde_json::from_str(&server.settings_json().unwrap()).unwrap();
+            serde_json::from_str(&server.settings_json("http://127.0.0.1:31415", "test-key").unwrap()).unwrap();
         assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "*");
+        assert_eq!(settings["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:31415");
 
         for tool in ["Write", "Bash"] {
             let response = call_approval_hook(
