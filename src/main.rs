@@ -295,7 +295,7 @@ const EN: L = L {
 
 // ── App State ─────────────────────────────────────────────────────────────────
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct AppState {
     projects: Vec<Project>,
@@ -326,6 +326,27 @@ fn default_true() -> bool { true }
 
 fn default_decod_path() -> String {
     "C:/Users/knyaz/Desktop/Decod/core/mcp_server.py".to_string()
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            projects: Vec::new(),
+            selected_project: None,
+            selected_chat: None,
+            freellmapi: FreeLlmApiSettings::default(),
+            agent_mode: AgentMode::Turbo,
+            claude_model: ClaudeModel::Sonnet,
+            context_limit: ConversationContextLimit::Last20Turns,
+            decod_mcp_enabled: true,
+            decod_mcp_path: default_decod_path(),
+            caveman_mode: true,
+            karpathy_rules: true,
+            auto_rules_provision: true,
+            lang: AppLang::Uk,
+            dark_theme: true,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1800,6 +1821,115 @@ impl eframe::App for MnemosyneApp {
         // localisation shorthand
         let l: &L = if self.state.lang == AppLang::En { &EN } else { &UK };
 
+        // ── Top Header Bar (matches theme color seamlessly) ───────────────────
+        let top_bg = if self.state.dark_theme {
+            egui::Color32::from_rgb(13, 13, 18)
+        } else {
+            egui::Color32::from_rgb(238, 238, 245)
+        };
+        let top_stroke = if self.state.dark_theme {
+            egui::Color32::from_rgb(25, 25, 36)
+        } else {
+            egui::Color32::from_rgb(215, 215, 228)
+        };
+
+        egui::TopBottomPanel::top("top_header_panel")
+            .frame(
+                egui::Frame::new()
+                    .fill(top_bg)
+                    .inner_margin(egui::Margin::symmetric(14, 7))
+                    .stroke(egui::Stroke::new(1.0, top_stroke)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🧠").size(18.0));
+                    ui.label(egui::RichText::new("Mnemosyne").strong().size(15.0));
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    if let Some(proj) = self.selected_project() {
+                        let badge_bg = if self.state.dark_theme {
+                            egui::Color32::from_rgb(24, 26, 40)
+                        } else {
+                            egui::Color32::from_rgb(222, 228, 245)
+                        };
+                        egui::Frame::new()
+                            .fill(badge_bg)
+                            .inner_margin(egui::Margin::symmetric(8, 3))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("📁 {}", proj.name))
+                                        .size(12.0)
+                                        .color(if self.state.dark_theme {
+                                            egui::Color32::from_rgb(175, 195, 255)
+                                        } else {
+                                            egui::Color32::from_rgb(35, 65, 175)
+                                        }),
+                                );
+                            });
+                    } else {
+                        ui.weak(if self.state.lang == AppLang::En { "No project selected" } else { "Проєкт не вибрано" });
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Settings button
+                        if ui.button(if self.state.lang == AppLang::En { "⚙ Settings" } else { "⚙ Налаштування" }).clicked() {
+                            self.show_settings = !self.show_settings;
+                        }
+
+                        // Plugins button
+                        if ui.button(if self.state.lang == AppLang::En { "🔌 Plugins" } else { "🔌 Плагіни" }).clicked() {
+                            self.show_plugin_manager = !self.show_plugin_manager;
+                            if self.show_plugin_manager && self.plugins.is_empty() {
+                                self.refresh_plugins();
+                            }
+                        }
+
+                        // Files button
+                        if self.selected_project().is_some() {
+                            if ui.button(if self.state.lang == AppLang::En { "📂 Files" } else { "📂 Файли" }).clicked() {
+                                self.show_project_files = !self.show_project_files;
+                                if self.show_project_files {
+                                    self.refresh_project_files();
+                                }
+                            }
+                        }
+
+                        ui.separator();
+
+                        // 1-click theme switch (🌙 / ☀)
+                        let theme_icon = if self.state.dark_theme { "🌙" } else { "☀" };
+                        let theme_tip = if self.state.dark_theme {
+                            if self.state.lang == AppLang::En { "Switch to Light Theme" } else { "Увімкнути світлу тему" }
+                        } else {
+                            if self.state.lang == AppLang::En { "Switch to Dark Theme" } else { "Увімкнути темну тему" }
+                        };
+                        if ui.button(theme_icon).on_hover_text(theme_tip).clicked() {
+                            self.state.dark_theme = !self.state.dark_theme;
+                            self.save();
+                        }
+
+                        // 1-click language switch (🇺🇦 / 🇬🇧)
+                        let lang_lbl = if self.state.lang == AppLang::En { "🇬🇧 EN" } else { "🇺🇦 UK" };
+                        if ui.button(lang_lbl).on_hover_text("Змінити мову / Change language").clicked() {
+                            self.state.lang = if self.state.lang == AppLang::En { AppLang::Uk } else { AppLang::En };
+                            self.save();
+                        }
+
+                        ui.separator();
+
+                        // Agent mode badge
+                        let (mode_text, mode_col) = match self.state.agent_mode {
+                            AgentMode::Plan => ("📋 Plan", egui::Color32::from_rgb(90, 160, 245)),
+                            AgentMode::Turbo => ("⚡ Turbo", egui::Color32::from_rgb(245, 160, 50)),
+                        };
+                        ui.colored_label(mode_col, mode_text);
+                    });
+                });
+            });
+
         let mut request_project_removal = None;
         egui::SidePanel::left("workspace")
             .default_width(260.0)
@@ -2897,9 +3027,15 @@ impl eframe::App for MnemosyneApp {
             egui::Window::new(l.settings_title)
                 .open(&mut show_settings)
                 .resizable(true)
-                .default_width(540.0)
+                .default_width(450.0)
+                .max_width(480.0)
+                .default_height(520.0)
+                .max_height(580.0)
                 .show(ctx, |ui| {
-                    // ── Appearance & Language ─────────────────────────────────
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            // ── Appearance & Language ─────────────────────────────────
                     ui.heading(if self.state.lang == AppLang::En { "🎨 Appearance & Language" } else { "🎨 Вигляд та мова" });
                     ui.horizontal(|ui| {
                         ui.label(format!("{}:", l.theme_label));
@@ -3187,6 +3323,7 @@ impl eframe::App for MnemosyneApp {
                     if let Some(status) = &self.update_status {
                         ui.colored_label(egui::Color32::LIGHT_GREEN, status);
                     }
+                        });
                 });
             self.show_settings = show_settings;
         }
@@ -3209,7 +3346,12 @@ fn load_state() -> Result<AppState, String> {
     }
     let content =
         fs::read_to_string(path).map_err(|error| format!("Не вдалося прочитати дані: {error}"))?;
-    serde_json::from_str(&content).map_err(|error| format!("Пошкоджені дані застосунку: {error}"))
+    let mut state: AppState = serde_json::from_str(&content)
+        .map_err(|error| format!("Пошкоджені дані застосунку: {error}"))?;
+    if state.decod_mcp_path.trim().is_empty() {
+        state.decod_mcp_path = default_decod_path();
+    }
+    Ok(state)
 }
 
 fn save_state(state: &AppState) -> Result<(), String> {
@@ -5493,8 +5635,13 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Mnemosyne",
         options,
-        Box::new(move |_creation_context| {
+        Box::new(move |creation_context| {
             let mut app = MnemosyneApp::new();
+            if app.state.dark_theme {
+                creation_context.egui_ctx.set_visuals(dark_visuals());
+            } else {
+                creation_context.egui_ctx.set_visuals(light_visuals());
+            }
             if let Some(msg) = linux_desktop_warning {
                 app.status = Some(msg);
             }
