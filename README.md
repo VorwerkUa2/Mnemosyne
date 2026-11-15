@@ -7,90 +7,149 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](#)
 [![Decod MCP](https://img.shields.io/badge/Decod%20MCP-46%20Tools-purple.svg)](https://github.com/VorwerkUa2/DFM)
-[![FreeLLMAPI](https://img.shields.io/badge/AI%20Cost-%240%20(FreeLLMAPI)-green.svg)](SETUP_GUIDE.md)
+[![Release](https://img.shields.io/badge/Release-v0.1.0-brightgreen.svg)](https://github.com/VorwerkUa2/Mnemosyne/releases/tag/v0.1.0)
+[![AI Cost](https://img.shields.io/badge/AI%20Cost-%240%20(FreeLLMAPI)-green.svg)](SETUP_GUIDE.md)
+
+[**🇺🇦 Українська версія**](#-українська-версія) | [**🇬🇧 English Version**](#-english-version)
 
 ---
 
-## 📖 Documentation & Guides / Документація
+## 🇺🇦 Українська версія
 
-- **🇺🇦 Повний посібник із встановлення та налаштування:** [SETUP_GUIDE.md (Українська)](SETUP_GUIDE.md#-українська-версія)
-- **🇬🇧 Complete Installation & Configuration Guide:** [SETUP_GUIDE.md (English)](SETUP_GUIDE.md#-english-version)
+**Mnemosyne** — це швидкий, нативний десктопний простір (написаний на Rust / `egui`), що об'єднує **Claude Code CLI**, локальний безкоштовний маршрутизатор моделей **FreeLLMAPI** ($0 витрат) та реверс-інжиніринг рушій **Decod** (46 інструментів MCP).
 
----
+### ⚡ Швидкий старт
 
-## ⚡ Quick Start / Швидкий старт
+#### 🪟 Windows 10 / 11
+1. Завантажте готовий автономний інсталятор: 👉 **[Mnemosyne-Setup.exe (v0.1.0)](https://github.com/VorwerkUa2/Mnemosyne/releases/tag/v0.1.0)** (10.8 МБ).
+2. Запустіть файл — програма автоматично розпакується в `%LOCALAPPDATA%\Programs\Mnemosyne`, створить ярлики на Робочому столі та в Меню «Пуск» і налаштує деінсталятор.
+3. Або запустіть скрипт `install.bat` у корені репозиторію.
 
-### 🪟 Windows 10 / 11
-Завантажте та запустіть автономний інсталятор:
-- **`Mnemosyne-Setup.exe`** (1-клік встановлення, ярлики на Робочому столі та в Меню Пуск, налаштування деінсталятора).
-- Або двічі клікніть **`install.bat`** у корені репозиторію.
-
-### 🐧 Linux (Void Linux, Fedora, Arch, Ubuntu/Debian)
-Встановлення однією командою в терміналі:
+#### 🐧 Linux (Void Linux, Fedora, Arch, Ubuntu/Debian)
+Встановлення **однією командою** в терміналі:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.sh | sh
 ```
-Скрипт автоматично встановить залежності для вашого дистрибутива (`xbps`, `dnf`, `pacman`, `apt`), помістить бінарник у `~/.local/bin/mnemosyne` та додасть ярлик у меню програм.
+Скрипт автоматично виявить ваш пакетний менеджер (`xbps`, `dnf`, `pacman`, `apt`), встановить необхідні графічні залежності Wayland/X11, помістить бінарник у `~/.local/bin/mnemosyne` та створить `.desktop`-ярлик у системному меню програм.
 
 ---
 
-## ✨ Features / Можливості
+### ✨ Головні можливості
 
-### 🎨 Інтерфейс та Локалізація (Bilingual & Dark Theme)
-- **Темна тема за замовчуванням**: Глибокі відтінки сланцю (`#121218`) з м'яким фіолетово-синім акцентом. Миттєве перемикання на світлу тему.
-- **Двомовний інтерфейс**: Повна підтримка **Української 🇺🇦** та **Англійської 🇬🇧** мов із перемиканням на льоту в Налаштуваннях.
-- **Вбудований переглядач та редактор**: Підтримка тексту, Markdown (із рендерингом таблиць і тасклістів) та зображень (PNG, JPEG, GIF, WebP, BMP).
+- **🎨 Інтерфейс та Локалізація**:
+  - **Темна сланцева тема за замовчуванням** (`#121218`) з м'яким індиго-акцентом та миттєвим перемиканням на світлу.
+  - **Нова верхня панель під колір теми**: брендинг, бейдж активного проєкту, індикатор режиму (`⚡ Turbo` / `📋 Plan`), швидкі перемикачі мови (`🇺🇦`/`🇬🇧`) та теми (`🌙`/`☀`).
+  - **Компактні налаштування зі слайдером**: зручний вертикальний скрол, фіксована ширина (450px) без перекриття робочого простору.
+  - **Повна двомовність**: Українська 🇺🇦 та Англійська 🇬🇧 на льоту.
+  - **Вбудований переглядач**: перегляд Markdown із рендерингом таблиць, списків завдань, підсвічування тексту та перегляд зображень (PNG, JPEG, GIF, WebP, BMP).
 
-### 🤖 Інтеграція Claude Code CLI та FreeLLMAPI ($0 Вартість)
-- **Потокові відповіді в реальному часі** з відображенням активних інструментів і можливістю скасування запиту в будь-який момент.
-- **Підключення до FreeLLMAPI**: 100% безкоштовний кодинг через пули **Google Gemini API** (1 500 запитів/добу) та **Groq Cloud** (14 400 запитів/добу).
-- **Збереження Unified API Key**: Ключі шифруються у системному сховищі облікових даних ОС.
-- **Наскрізний тест з'єднання**: Кнопка перевірки пінгу та валідації моделі прямо з GUI.
+- **🤖 Інтеграція Claude Code CLI та FreeLLMAPI ($0)**:
+  - Потокова генерація відповіді в реальному часі з відображенням поточного інструмента та можливістю скасування в 1 клік.
+  - Робота через локальний пул **FreeLLMAPI**: безкоштовний кодинг через **Google Gemini API** (1 500 запитів/день) та **Groq Cloud** (14 400 запитів/день).
+  - Безпечне збереження Unified API Key у захищеному сховищі облікових даних ОС.
+  - Вбудовані кнопки перевірки з'єднання та наскрізного тесту запиту до моделі.
 
-### 🛡 Безпека та Режими агента
-- **📋 План (Plan Mode)**: Тільки читання (`Read`, `Glob`, `Grep`). Зміни файлів заблоковані.
-- **⚡ Turbo (File Edits with Approval)**: Модель може змінювати файли, але кожна дія вимагає підтвердження користувача з переглядом diff.
+- **🛡 Безпека та Режими агента**:
+  - **📋 План (Plan Mode)**: Тільки читання (`Read`, `Glob`, `Grep`). Зміни файлів заблоковані.
+  - **⚡ Turbo (File Edits with Approval)**: Агент може змінювати файли проєкту, але кожна правка потребує схвалення користувача з наочним переглядом diff.
 
-### ⚡ Суперсили кодингу (Vibe-Coding Superpowers)
-- **Режим Caveman**: Економія 30–40% вихідних токенів шляхом усунення балаканини, формальностей і пустих прелюдій.
-- **Принципи Карпатого (Karpathy Rules)**: Дотримання YAGNI, мінімум непотрібних абстракцій, збереження стилю репозиторію та захисне програмування.
-- **Автопровізіонування `.claude/CLAUDE.md`**: Автоматичне визначення стеку проєкту (Rust, Python, C/C++, C#, Go, Lua, Web) і генерація індивідуальних директив для агента.
-- **Кнопка `🔍 Перевірити діагностику`**: Миттєвий запуск `cargo check` або перевірки синтаксису Python прямо з інтерфейсу з **0 витратою токенів**.
+- **⚡ Суперсили кодингу (Vibe-Coding)**:
+  - **Режим Caveman**: економія 30–40% токенів завдяки відсіканню балаканини, ввічливих прелюдій і зайвого повторення коду.
+  - **Принципи Карпатого (Karpathy Rules) + Ponytail**: суворе дотримання YAGNI, мінімум непотрібних абстракцій, захисне програмування та збереження стилю репозиторію.
+  - **Кнопка `🔍 Перевірити діагностику`**: миттєва перевірка компілятором (`cargo check` або синтаксис Python) прямо в чаті з **0 витратою токенів**!
+  - **Автопровізіонування `.claude/CLAUDE.md`**: автоматичне визначення стеку проєкту (Rust, Python, C/C++, C#, Go, Lua, Web) і генерація індивідуальних правил для моделі.
 
-### 🛠 Decod Reverse Engineering & Modding MCP (46 Інструментів)
-Автоматично підключає повноцінний RE-рушій [Decod (DFM)](https://github.com/VorwerkUa2/DFM):
-- **Стелс & Динаміка**: Frida runtime hooking, Scylla dumper, захист від анти-відлагодження (`libstealth.so`).
-- **Статика & Дизасемблювання**: Capstone disassembler, LIEF аналіз бінарників (PE, ELF, Mach-O), Headless C decompiler.
-- **Ігрові рушії**: Розпакування та пакування UE5 PAK / UTOC / UCAS, редагування сейвів (`uesave`), аналіз 3D моделей (OBJ) та маніпуляції аудіо/відео через FFmpeg.
-- **Code Intelligence**: AST аналіз структури (`inspect_code_structure`) та хірургічне вилучення функцій (`extract_function_definition`), що знижує витрати токенів на **70%–85%**.
+- **🛠 Повна інтеграція Decod RE-рушія (46 MCP Інструментів)**:
+  - Динаміка та хуки пам'яті: Frida dynamic runner, Scylla process dumper, захист від анти-відлагодження (`libstealth.so`).
+  - Статика та дизасемблювання: Capstone x86/x64, LIEF аналіз заголовків (PE/ELF/Mach-O), Headless C decompiler.
+  - Модинг ігор: розпаковка/пакування контейнерів UE5 PAK/UTOC/UCAS (`repak`), читання та редагування сейвів (`uesave`), конвертація звуку та відео через FFmpeg.
+  - Code Intelligence: аналіз AST структури (`inspect_code_structure`) та точкове вилучення функцій (`extract_function_definition`), що знижує жор токенів на **70%–85%**.
 
-### 🔄 Оновлення та обслуговування в 1 клік
-Кнопка в Налаштуваннях дозволяє оновити всі компоненти у фоні:
-- Claude Code CLI (`npm update -g @anthropic-ai/claude-code`)
-- Decod RE-рушій (`git pull origin main`)
-- Модулі Python (`pip install --upgrade frida lief capstone psutil pyright`)
+- **🔄 Оновлення та обслуговування в 1 клік**:
+  - Оновлення Claude Code CLI (`npm update -g @anthropic-ai/claude-code`).
+  - Оновлення RE-рушія Decod (`git pull origin main`).
+  - Оновлення бібліотек Python (`pip install --upgrade frida lief capstone psutil pyright`).
+
+---
+
+## 🇬🇧 English Version
+
+**Mnemosyne** is a fast, native desktop workspace (built with Rust / `egui`) that seamlessly connects **Claude Code CLI**, a local free AI routing companion **FreeLLMAPI** ($0 cost), and the headless reverse engineering engine **Decod** (46 MCP tools).
+
+### ⚡ Quick Start
+
+#### 🪟 Windows 10 / 11
+1. Download the standalone 1-click installer: 👉 **[Mnemosyne-Setup.exe (v0.1.0)](https://github.com/VorwerkUa2/Mnemosyne/releases/tag/v0.1.0)** (10.8 MB).
+2. Run the executable — it extracts into `%LOCALAPPDATA%\Programs\Mnemosyne`, creates Desktop & Start Menu shortcuts, and registers a standard uninstaller in Windows Settings.
+3. Or double-click `install.bat` in the repository root.
+
+#### 🐧 Linux (Void Linux, Fedora, Arch, Ubuntu/Debian)
+Install with **a single terminal command**:
+```bash
+curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.sh | sh
+```
+The script auto-detects your package manager (`xbps`, `dnf`, `pacman`, `apt`), installs Wayland/X11 runtime dependencies, installs the binary to `~/.local/bin/mnemosyne`, and sets up the `.desktop` launcher.
+
+---
+
+### ✨ Key Features
+
+- **🎨 UI & Localization**:
+  - **Default Dark Slate Theme** (`#121218`) with soft indigo accents and instant toggle to Light Theme.
+  - **Matching Top Header Bar**: App branding, active project badge, agent status indicator (`⚡ Turbo` / `📋 Plan`), quick 1-click language toggle (`🇺🇦`/`🇬🇧`), and theme toggle (`🌙`/`☀`).
+  - **Compact Settings Window with Slider**: Smooth vertical scroll area (`ScrollArea::vertical()`), bounded 450px width preventing workspace overflow.
+  - **Full Bilingual Support**: Instant switching between Ukrainian 🇺🇦 and English 🇬🇧.
+  - **Built-in Document & Image Viewer**: Markdown parser with tables, task lists, and syntax blocks; image viewer for PNG, JPEG, GIF, WebP, BMP.
+
+- **🤖 Claude Code CLI & FreeLLMAPI ($0 Cost)**:
+  - Real-time streaming output displaying active tool calls with instant 1-click request cancellation.
+  - Local **FreeLLMAPI** connectivity: 100% free coding via **Google Gemini API** (1,500 req/day) and **Groq Cloud** (14,400 req/day).
+  - Secure credential storage: Unified API keys are encrypted in the native OS keychain.
+  - In-app connection checking and end-to-end ping test buttons.
+
+- **🛡 Safety & Agent Modes**:
+  - **📋 Plan Mode**: Read-only operations (`Read`, `Glob`, `Grep`). All file modifications are strictly blocked.
+  - **⚡ Turbo Mode (File Edits with Approval)**: The agent can modify project files, but each edit requires manual user confirmation with a side-by-side diff preview.
+
+- **⚡ Vibe-Coding Superpowers**:
+  - **Caveman Mode**: Saves 30–40% tokens by cutting out conversational filler, greetings, and boilerplate code diffs.
+  - **Karpathy Rules + Ponytail**: Strictly enforces YAGNI (You Aren't Gonna Need It), minimal abstractions, defensive checks, and repo style matching.
+  - **`🔍 Check Diagnostics` Button**: Background compiler checks (`cargo check` or Python syntax) directly from the chat UI with **0 token cost**.
+  - **Auto-Provisioned `.claude/CLAUDE.md`**: Detects project tech stack (Rust, Python, C/C++, C#, Go, Lua, Web) and injects tailor-made agent rules.
+
+- **🛠 Decod Headless Reverse Engineering MCP (46 Tools)**:
+  - Memory dynamics & hooking: Frida dynamic runner, Scylla process memory dumper, anti-anti-debugging (`libstealth.so`).
+  - Static disassembly & analysis: Capstone x86/x64, LIEF binary parsing (PE/ELF/Mach-O), Headless C decompiler.
+  - Game modding & assets: Unreal Engine 5 PAK/UTOC/UCAS repacking (`repak`), savefile decoding (`uesave`), multimedia conversion via FFmpeg.
+  - Code Intelligence: AST structure outline (`inspect_code_structure`) and surgical single-function extraction (`extract_function_definition`), saving **70%–85% token burn**.
+
+- **🔄 1-Click Updates & Maintenance**:
+  - Updates Claude Code CLI (`npm update -g @anthropic-ai/claude-code`).
+  - Updates Decod RE engine (`git pull origin main`).
+  - Updates Python dependencies (`pip install --upgrade frida lief capstone psutil pyright`).
 
 ---
 
 ## 🛠 Збірка з вихідного коду (Building from Source)
 
 ```bash
-# Клонування репозиторію
+# Clone the repository / Клонування репозиторію
 git clone https://github.com/VorwerkUa2/Mnemosyne.git
 cd Mnemosyne
 
-# Запуск у режимі розробки
+# Run development build / Запуск у режимі розробки
 cargo run
 
-# Збірка оптимізованого релізу
+# Build optimized release / Збірка релізу
 cargo build --release
 
-# Запуск тестів (усі 37 тестів)
+# Run unit tests / Запуск тестів (all 37 tests passing)
 cargo test
 ```
 
 ---
 
-## 📜 Ліцензія
+## 📜 Ліцензія / License
 
-Проєкт розповсюджується під ліцензією [MIT](LICENSE).
+Distributed under the [MIT License](LICENSE).
+Розповсюджується під ліцензією [MIT](LICENSE).
