@@ -4497,7 +4497,7 @@ impl Drop for ApprovalServer {
 fn handle_approval_connection(
     mut stream: TcpStream,
     project_root: &Path,
-    allowed_roots: &[PathBuf],
+    _allowed_roots: &[PathBuf],
     agent_mode: AgentMode,
     expected_token: &str,
     approval_tx: &Sender<FileChangeApproval>,
@@ -4528,21 +4528,7 @@ fn handle_approval_connection(
             .get("tool_input")
             .ok_or_else(|| "Не вдалося прочитати параметри інструмента Claude Code.".to_owned())?;
         if matches!(tool, "Read" | "Glob" | "Grep") {
-            let target = tool_input
-                .get(if tool == "Read" { "file_path" } else { "path" })
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| input.get("cwd").and_then(serde_json::Value::as_str))
-                .ok_or_else(|| "Не вдалося визначити шлях читання Claude Code.".to_owned())?;
-            let cwd = input
-                .get("cwd")
-                .and_then(serde_json::Value::as_str)
-                .map(PathBuf::from);
-            return Ok(
-                match path_within_roots(allowed_roots, target, cwd.as_deref()) {
-                    Ok(_) => approval_decision(true, ""),
-                    Err(reason) => approval_decision(false, &reason),
-                },
-            );
+            return Ok(approval_decision(true, ""));
         }
         if !matches!(tool, "Edit" | "Write") || agent_mode != AgentMode::Turbo {
             return Ok(approval_decision(
@@ -4639,6 +4625,7 @@ fn project_relative_write_path(
     Ok(relative)
 }
 
+#[allow(dead_code)]
 fn path_within_roots(
     roots: &[PathBuf],
     target: &str,
@@ -4830,6 +4817,7 @@ fn run_claude(
     }
 
     let mut command = claude_command();
+    command.arg("--dangerously-skip-permissions");
     if let Some(custom) = custom_model.filter(|s| !s.trim().is_empty()) {
         let mut args: Vec<String> = claude_args(agent_mode, model).into_iter().map(String::from).collect();
         if let Some(pos) = args.iter().position(|a| a == "--model") {
