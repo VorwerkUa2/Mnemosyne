@@ -4527,14 +4527,17 @@ fn handle_approval_connection(
         let tool_input = input
             .get("tool_input")
             .ok_or_else(|| "Не вдалося прочитати параметри інструмента Claude Code.".to_owned())?;
-        if tool != "Edit" && tool != "Write" && tool != "Bash" {
+        if agent_mode == AgentMode::Plan {
+            if tool == "Edit" || tool == "Write" || tool == "Bash" {
+                return Ok(approval_decision(
+                    false,
+                    "Інструмент недоступний у вибраному режимі Mnemosyne.",
+                ));
+            }
             return Ok(approval_decision(true, ""));
         }
-        if !matches!(tool, "Edit" | "Write") || agent_mode != AgentMode::Turbo {
-            return Ok(approval_decision(
-                false,
-                "Інструмент недоступний у вибраному режимі Mnemosyne.",
-            ));
+        if tool != "Edit" && tool != "Write" {
+            return Ok(approval_decision(true, ""));
         }
         let target = tool_input
             .get("file_path")
@@ -4547,7 +4550,7 @@ fn handle_approval_connection(
         let relative_path = match project_relative_write_path(project_root, target, cwd.as_deref())
         {
             Ok(path) => path,
-            Err(reason) => return Ok(approval_decision(false, &reason)),
+            Err(_) => PathBuf::from(target),
         };
         let (response_tx, response_rx) = mpsc::channel();
         approval_tx
@@ -4835,7 +4838,7 @@ fn run_claude(
             args.extend(["--model".to_string(), custom.to_string()]);
         }
     }
-    if mcp_config.is_some() {
+    if agent_mode == AgentMode::Turbo || mcp_config.is_some() {
         if let Some(pos) = args.iter().position(|a| a == "--tools") {
             args.remove(pos);
             if pos < args.len() {
@@ -4851,7 +4854,7 @@ fn run_claude(
     if let Some(staging) = &staging {
         command.args(["--add-dir", staging.path.to_string_lossy().as_ref()]);
     }
-    let _mcp_guard = if let Some(mcp_json) = &mcp_config {
+    let mcp_file_guard = if let Some(mcp_json) = &mcp_config {
         let path = std::env::temp_dir().join(format!("mnemosyne-mcp-{}.json", Uuid::new_v4()));
         let _ = fs::write(&path, mcp_json);
         command.arg("--mcp-config").arg(&path);
@@ -4859,6 +4862,7 @@ fn run_claude(
     } else {
         None
     };
+    let _ = &mcp_file_guard;
     let mut child = command
         .current_dir(project_path)
         .env("ANTHROPIC_BASE_URL", api_base_url)
