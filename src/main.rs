@@ -38,6 +38,235 @@ const MAX_PROJECT_SCAN_DEPTH: usize = 6;
 const MAX_APPROVAL_HOOK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_APPROVAL_RESPONSE_BYTES: usize = 1024 * 1024;
 
+// ── Localisation ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+enum AppLang {
+    #[default]
+    Uk,
+    En,
+}
+
+#[allow(dead_code)]
+struct L {
+    // Sidebar
+    pub app_subtitle: &'static str,
+    pub settings_btn: &'static str,
+    pub plugins_btn: &'static str,
+    pub add_folder: &'static str,
+    pub add_project: &'static str,
+    pub projects_heading: &'static str,
+    pub new_chat: &'static str,
+    pub no_chats: &'static str,
+    // Chat area
+    pub chat_placeholder: &'static str,
+    pub send_btn: &'static str,
+    pub cancel_btn: &'static str,
+    pub attach_btn: &'static str,
+    pub export_chat: &'static str,
+    pub clear_history: &'static str,
+    pub delete_chat: &'static str,
+    pub rename_chat: &'static str,
+    pub copy_msg: &'static str,
+    pub you_label: &'static str,
+    pub claude_label: &'static str,
+    pub thinking_label: &'static str,
+    pub no_project: &'static str,
+    pub select_or_create: &'static str,
+    // Settings
+    pub settings_title: &'static str,
+    pub lang_label: &'static str,
+    pub theme_label: &'static str,
+    pub theme_dark: &'static str,
+    pub theme_light: &'static str,
+    pub freellmapi_section: &'static str,
+    pub freellmapi_url: &'static str,
+    pub freellmapi_key: &'static str,
+    pub freellmapi_key_hint: &'static str,
+    pub freellmapi_save_key: &'static str,
+    pub freellmapi_check: &'static str,
+    pub freellmapi_test: &'static str,
+    pub freellmapi_install: &'static str,
+    pub freellmapi_connected: &'static str,
+    pub freellmapi_disconnected: &'static str,
+    pub claude_cli_section: &'static str,
+    pub claude_cli_found: &'static str,
+    pub claude_cli_missing: &'static str,
+    pub claude_cli_install_hint: &'static str,
+    pub decod_section: &'static str,
+    pub decod_enable: &'static str,
+    pub decod_path: &'static str,
+    pub decod_check: &'static str,
+    pub decod_active_hint: &'static str,
+    pub model_section: &'static str,
+    pub mode_section: &'static str,
+    pub mode_plan: &'static str,
+    pub mode_turbo: &'static str,
+    pub context_section: &'static str,
+    pub close_btn: &'static str,
+    // Confirmations
+    pub confirm_delete_chat: &'static str,
+    pub confirm_clear_chat: &'static str,
+    pub confirm_remove_project: &'static str,
+    pub yes_btn: &'static str,
+    pub cancel_confirm: &'static str,
+    // Files
+    pub files_heading: &'static str,
+    pub file_save: &'static str,
+    pub file_preview: &'static str,
+    pub file_edit: &'static str,
+    pub file_filter: &'static str,
+    // Approval
+    pub approval_title: &'static str,
+    pub approval_allow: &'static str,
+    pub approval_deny: &'static str,
+    // Agent mode labels
+    pub plan_hint: &'static str,
+    pub turbo_hint: &'static str,
+}
+
+const UK: L = L {
+    app_subtitle: "Твій простір для вайбкодингу",
+    settings_btn: "⚙  Налаштування",
+    plugins_btn: "🔌  Плагіни Claude Code",
+    add_folder: "+ Папка",
+    add_project: "+ Проєкт",
+    projects_heading: "Проєкти",
+    new_chat: "+ Новий чат",
+    no_chats: "Немає чатів. Натисни «+ Новий чат».",
+    chat_placeholder: "Напиши запит… (Shift+Enter — новий рядок, Enter — надіслати)",
+    send_btn: "Надіслати ↵",
+    cancel_btn: "✕ Скасувати",
+    attach_btn: "📎 Прикріпити файл",
+    export_chat: "⬇ Експортувати чат",
+    clear_history: "🗑 Очистити історію",
+    delete_chat: "✕ Видалити чат",
+    rename_chat: "✎ Перейменувати",
+    copy_msg: "📋 Копіювати",
+    you_label: "Ти",
+    claude_label: "Claude",
+    thinking_label: "Думаю…",
+    no_project: "Немає проєкту",
+    select_or_create: "Вибери або створи проєкт на бічній панелі.",
+    settings_title: "Налаштування",
+    lang_label: "Мова / Language",
+    theme_label: "Тема",
+    theme_dark: "🌙 Темна",
+    theme_light: "☀ Світла",
+    freellmapi_section: "FreeLLMAPI",
+    freellmapi_url: "URL",
+    freellmapi_key: "Unified API Key",
+    freellmapi_key_hint: "Ключ зберігається у сховищі облікових даних ОС.",
+    freellmapi_save_key: "Зберегти ключ",
+    freellmapi_check: "Перевірити підключення",
+    freellmapi_test: "Тест запиту",
+    freellmapi_install: "Завантажити й встановити FreeLLMAPI",
+    freellmapi_connected: "✓ Підключено",
+    freellmapi_disconnected: "✗ Не підключено",
+    claude_cli_section: "Claude Code CLI",
+    claude_cli_found: "✓ Знайдено",
+    claude_cli_missing: "✗ Не знайдено",
+    claude_cli_install_hint: "Встановіть Claude Code CLI →",
+    decod_section: "Decod MCP (RE-рушій)",
+    decod_enable: "Увімкнути Decod MCP",
+    decod_path: "Шлях до mcp_server.py",
+    decod_check: "Перевірити",
+    decod_active_hint: "✓ Decod MCP передається Claude Code як --mcp-config",
+    model_section: "Модель Claude",
+    mode_section: "Режим агента",
+    mode_plan: "📋 Планування (тільки читання)",
+    mode_turbo: "⚡ Turbo (редагування файлів з підтвердженням)",
+    context_section: "Контекст розмови",
+    close_btn: "Закрити",
+    confirm_delete_chat: "Видалити цей чат та всі його повідомлення?",
+    confirm_clear_chat: "Очистити всю історію цього чату?",
+    confirm_remove_project: "Прибрати проєкт з робочого простору? (Файли на диску не видаляються)",
+    yes_btn: "Так",
+    cancel_confirm: "Скасувати",
+    files_heading: "Файли проєкту",
+    file_save: "💾 Зберегти",
+    file_preview: "👁 Перегляд",
+    file_edit: "✎ Редагувати",
+    file_filter: "Фільтр…",
+    approval_title: "Запит на зміну файлу",
+    approval_allow: "✓ Дозволити",
+    approval_deny: "✕ Відхилити",
+    plan_hint: "Claude лише читає й аналізує файли — без змін.",
+    turbo_hint: "Claude може редагувати файли. Кожна зміна потребує підтвердження.",
+};
+
+const EN: L = L {
+    app_subtitle: "Your vibe-coding workspace",
+    settings_btn: "⚙  Settings",
+    plugins_btn: "🔌  Claude Code Plugins",
+    add_folder: "+ Folder",
+    add_project: "+ Project",
+    projects_heading: "Projects",
+    new_chat: "+ New chat",
+    no_chats: "No chats. Click «+ New chat».",
+    chat_placeholder: "Type a message… (Shift+Enter = newline, Enter = send)",
+    send_btn: "Send ↵",
+    cancel_btn: "✕ Cancel",
+    attach_btn: "📎 Attach file",
+    export_chat: "⬇ Export chat",
+    clear_history: "🗑 Clear history",
+    delete_chat: "✕ Delete chat",
+    rename_chat: "✎ Rename",
+    copy_msg: "📋 Copy",
+    you_label: "You",
+    claude_label: "Claude",
+    thinking_label: "Thinking…",
+    no_project: "No project",
+    select_or_create: "Select or create a project in the sidebar.",
+    settings_title: "Settings",
+    lang_label: "Мова / Language",
+    theme_label: "Theme",
+    theme_dark: "🌙 Dark",
+    theme_light: "☀ Light",
+    freellmapi_section: "FreeLLMAPI",
+    freellmapi_url: "URL",
+    freellmapi_key: "Unified API Key",
+    freellmapi_key_hint: "Key is stored in the OS credential store.",
+    freellmapi_save_key: "Save key",
+    freellmapi_check: "Check connection",
+    freellmapi_test: "Test request",
+    freellmapi_install: "Download & install FreeLLMAPI",
+    freellmapi_connected: "✓ Connected",
+    freellmapi_disconnected: "✗ Not connected",
+    claude_cli_section: "Claude Code CLI",
+    claude_cli_found: "✓ Found",
+    claude_cli_missing: "✗ Not found",
+    claude_cli_install_hint: "Install Claude Code CLI →",
+    decod_section: "Decod MCP (RE Engine)",
+    decod_enable: "Enable Decod MCP",
+    decod_path: "Path to mcp_server.py",
+    decod_check: "Verify",
+    decod_active_hint: "✓ Decod MCP passed to Claude Code as --mcp-config",
+    model_section: "Claude Model",
+    mode_section: "Agent mode",
+    mode_plan: "📋 Plan (read-only)",
+    mode_turbo: "⚡ Turbo (file edits with confirmation)",
+    context_section: "Conversation context",
+    close_btn: "Close",
+    confirm_delete_chat: "Delete this chat and all its messages?",
+    confirm_clear_chat: "Clear all messages in this chat?",
+    confirm_remove_project: "Remove project from workspace? (Files on disk are NOT deleted)",
+    yes_btn: "Yes",
+    cancel_confirm: "Cancel",
+    files_heading: "Project files",
+    file_save: "💾 Save",
+    file_preview: "👁 Preview",
+    file_edit: "✎ Edit",
+    file_filter: "Filter…",
+    approval_title: "File change request",
+    approval_allow: "✓ Allow",
+    approval_deny: "✕ Deny",
+    plan_hint: "Claude only reads and analyses files — no changes.",
+    turbo_hint: "Claude can edit files. Each change requires confirmation.",
+};
+
+// ── App State ─────────────────────────────────────────────────────────────────
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct AppState {
@@ -48,6 +277,20 @@ struct AppState {
     agent_mode: AgentMode,
     claude_model: ClaudeModel,
     context_limit: ConversationContextLimit,
+    #[serde(default)]
+    decod_mcp_enabled: bool,
+    #[serde(default = "default_decod_path")]
+    decod_mcp_path: String,
+    #[serde(default)]
+    lang: AppLang,
+    #[serde(default = "default_dark_theme")]
+    dark_theme: bool,
+}
+
+fn default_dark_theme() -> bool { true }
+
+fn default_decod_path() -> String {
+    "C:/Users/knyaz/Desktop/Decod/core/mcp_server.py".to_string()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -203,6 +446,14 @@ struct CompanionInstallResult {
     result: Result<(), String>,
 }
 
+struct ClaudeInstallResult {
+    result: Result<(), String>,
+}
+
+struct ConnectionTestResult {
+    result: Result<String, String>,
+}
+
 #[derive(Clone)]
 struct ClaudePlugin {
     id: String,
@@ -314,6 +565,13 @@ struct MnemosyneApp {
     provider_check_rx: Receiver<ProviderCheckResult>,
     companion_install_tx: Sender<CompanionInstallResult>,
     companion_install_rx: Receiver<CompanionInstallResult>,
+    connection_test_tx: Sender<ConnectionTestResult>,
+    connection_test_rx: Receiver<ConnectionTestResult>,
+    claude_install_tx: Sender<ClaudeInstallResult>,
+    claude_install_rx: Receiver<ClaudeInstallResult>,
+    installing_claude_cli: bool,
+    testing_connection: bool,
+    decod_mcp_check_status: Option<String>,
 }
 
 impl MnemosyneApp {
@@ -324,6 +582,8 @@ impl MnemosyneApp {
         let (plugin_manager_tx, plugin_manager_rx) = mpsc::channel();
         let (provider_check_tx, provider_check_rx) = mpsc::channel();
         let (companion_install_tx, companion_install_rx) = mpsc::channel();
+        let (connection_test_tx, connection_test_rx) = mpsc::channel();
+        let (claude_install_tx, claude_install_rx) = mpsc::channel();
         let (state, load_error) = match load_state() {
             Ok(state) => (state, None),
             Err(error) => (AppState::default(), Some(error)),
@@ -353,6 +613,7 @@ impl MnemosyneApp {
             freellmapi_key_draft: String::new(),
             checking_provider: false,
             installing_companion: false,
+            installing_claude_cli: false,
             show_project_files: false,
             project_files: Vec::new(),
             project_files_truncated: false,
@@ -377,6 +638,12 @@ impl MnemosyneApp {
             provider_check_rx,
             companion_install_tx,
             companion_install_rx,
+            connection_test_tx,
+            connection_test_rx,
+            claude_install_tx,
+            claude_install_rx,
+            testing_connection: false,
+            decod_mcp_check_status: None,
         }
     }
 
@@ -430,12 +697,18 @@ impl MnemosyneApp {
         };
         if is_supported_project_pdf_file(relative_path) {
             let result = canonical_project_file(&project_root, relative_path).and_then(|path| {
-                open::that(path).map_err(|error| {
+                let page_count = estimate_pdf_page_count(&path);
+                open::that(&path).map_err(|error| {
                     format!("Не вдалося відкрити PDF у системному переглядачі: {error}")
-                })
+                }).map(|()| (path, page_count))
             });
             self.status = Some(match result {
-                Ok(()) => format!(
+                Ok((_path, Some(n))) => format!(
+                    "PDF відкрито у системному переглядачі: {} (~{} стор.)",
+                    relative_path.display(),
+                    n
+                ),
+                Ok((_path, None)) => format!(
                     "PDF відкрито у системному переглядачі: {}",
                     relative_path.display()
                 ),
@@ -764,6 +1037,16 @@ impl MnemosyneApp {
         if self.busy {
             return;
         }
+        if !is_claude_installed() {
+            self.status = Some(
+                "Claude Code CLI не знайдено. Встановіть його за інструкцією: \
+                 https://docs.anthropic.com/en/docs/claude-code — \
+                 потім перезапустіть Mnemosyne."
+                    .to_owned(),
+            );
+            self.show_settings = true;
+            return;
+        }
         let api_key = match load_freellmapi_key() {
             Ok(Some(key)) => key,
             Ok(None) => {
@@ -840,6 +1123,21 @@ impl MnemosyneApp {
         let approval_tx = self.approval_tx.clone();
         let active_child = Arc::clone(&self.active_child);
         let cancel_requested = Arc::clone(&self.cancel_requested);
+        let mcp_config = if self.state.decod_mcp_enabled {
+            let path = self.state.decod_mcp_path.clone();
+            let mcp_json = serde_json::json!({
+                "mcpServers": {
+                    "decod": {
+                        "command": "python",
+                        "args": [path]
+                    }
+                }
+            })
+            .to_string();
+            Some(mcp_json)
+        } else {
+            None
+        };
         thread::spawn(move || {
             let result = run_claude(
                 &project_path,
@@ -854,6 +1152,7 @@ impl MnemosyneApp {
                 &chat_id,
                 &active_child,
                 &cancel_requested,
+                mcp_config,
             );
             let cancelled = cancel_requested.load(Ordering::SeqCst)
                 && matches!(&result, Err(error) if error == "Запит скасовано.");
@@ -924,6 +1223,38 @@ impl MnemosyneApp {
         });
     }
 
+    fn test_freellmapi_connection(&mut self) {
+        if self.testing_connection {
+            return;
+        }
+        let base_url = match normalize_api_base_url(&self.state.freellmapi.base_url) {
+            Ok(url) => url,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        let api_key = match load_freellmapi_key() {
+            Ok(Some(key)) => key,
+            Ok(None) => {
+                self.status = Some("Спочатку збережіть unified API key FreeLLMAPI.".to_owned());
+                return;
+            }
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        let first_model = self.state.freellmapi.ready_models.first().cloned();
+        self.testing_connection = true;
+        self.status = Some("Тестую з'єднання з FreeLLMAPI…".to_owned());
+        let tx = self.connection_test_tx.clone();
+        thread::spawn(move || {
+            let result = test_freellmapi_round_trip(&base_url, &api_key, first_model.as_deref());
+            let _ = tx.send(ConnectionTestResult { result });
+        });
+    }
+
     fn install_freellmapi_companion(&mut self) {
         if self.installing_companion {
             return;
@@ -935,6 +1266,19 @@ impl MnemosyneApp {
         thread::spawn(move || {
             let result = install_official_freellmapi();
             let _ = tx.send(CompanionInstallResult { result });
+        });
+    }
+
+    fn install_claude_cli_background(&mut self) {
+        if self.installing_claude_cli {
+            return;
+        }
+        self.installing_claude_cli = true;
+        self.status = Some("Встановлюю Claude Code CLI через npm…".to_owned());
+        let tx = self.claude_install_tx.clone();
+        thread::spawn(move || {
+            let result = install_claude_cli();
+            let _ = tx.send(ClaudeInstallResult { result });
         });
     }
 
@@ -1135,6 +1479,22 @@ impl MnemosyneApp {
             });
             ctx.request_repaint();
         }
+        while let Ok(response) = self.connection_test_rx.try_recv() {
+            self.testing_connection = false;
+            self.status = Some(match response.result {
+                Ok(model) => format!("✓ З'єднання успішне (модель: {model})"),
+                Err(error) => format!("✗ Помилка: {error}"),
+            });
+            ctx.request_repaint();
+        }
+        while let Ok(response) = self.claude_install_rx.try_recv() {
+            self.installing_claude_cli = false;
+            self.status = Some(match response.result {
+                Ok(()) => "✓ Claude Code CLI успішно встановлено!".to_owned(),
+                Err(error) => format!("✗ Помилка встановлення Claude Code CLI: {error}"),
+            });
+            ctx.request_repaint();
+        }
         if self.busy {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
@@ -1144,37 +1504,106 @@ impl MnemosyneApp {
         if self.installing_companion {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
+        if self.installing_claude_cli {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
         if self.loading_plugins || self.plugin_action_running {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
+        if self.testing_connection {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
     }
 }
 
+// ── Custom visuals ────────────────────────────────────────────────────────────
+
+fn dark_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::dark();
+    // Background: deep slate
+    v.panel_fill = egui::Color32::from_rgb(18, 18, 24);
+    v.window_fill = egui::Color32::from_rgb(24, 24, 32);
+    v.extreme_bg_color = egui::Color32::from_rgb(12, 12, 18);
+    v.faint_bg_color = egui::Color32::from_rgb(28, 28, 38);
+    // Widget styles
+    v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(32, 32, 44);
+    v.widgets.inactive.bg_fill = egui::Color32::from_rgb(38, 38, 54);
+    v.widgets.hovered.bg_fill = egui::Color32::from_rgb(55, 55, 80);
+    v.widgets.active.bg_fill = egui::Color32::from_rgb(80, 100, 180);
+    // Accent: purple-blue
+    v.selection.bg_fill = egui::Color32::from_rgb(80, 100, 200);
+    v.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 150, 255));
+    // Text
+    v.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(200, 200, 215);
+    v.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(180, 180, 200);
+    v.hyperlink_color = egui::Color32::from_rgb(120, 160, 255);
+    // Code blocks
+    v.code_bg_color = egui::Color32::from_rgb(28, 28, 40);
+    v
+}
+
+fn light_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::light();
+    v.panel_fill = egui::Color32::from_rgb(248, 248, 252);
+    v.window_fill = egui::Color32::WHITE;
+    v.widgets.active.bg_fill = egui::Color32::from_rgb(80, 100, 200);
+    v.selection.bg_fill = egui::Color32::from_rgb(180, 200, 255);
+    v.hyperlink_color = egui::Color32::from_rgb(60, 100, 200);
+    v
+}
+
 impl eframe::App for MnemosyneApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── Apply theme ───────────────────────────────────────────────────────
+        if self.state.dark_theme {
+            ctx.set_visuals(dark_visuals());
+        } else {
+            ctx.set_visuals(light_visuals());
+        }
+
         self.receive_result(ctx);
+
+        // localisation shorthand
+        let l: &L = if self.state.lang == AppLang::En { &EN } else { &UK };
 
         let mut request_project_removal = None;
         egui::SidePanel::left("workspace")
-            .default_width(250.0)
+            .default_width(260.0)
+            .min_width(200.0)
             .resizable(true)
             .show(ctx, |ui| {
+                ui.add_space(10.0);
+
+                // ── Logo + title ──────────────────────────────────────────────
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🧠").size(22.0));
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Mnemosyne").strong().size(16.0));
+                        ui.label(egui::RichText::new(l.app_subtitle).weak().size(10.0));
+                    });
+                });
+
                 ui.add_space(8.0);
-                ui.heading("Mnemosyne");
-                ui.label("Твій простір для вайбкодингу");
-                if ui.button("⚙ Налаштування AI").clicked() {
+                ui.separator();
+                ui.add_space(6.0);
+
+                // ── Top buttons ───────────────────────────────────────────────
+                if ui.add_sized([ui.available_width(), 28.0],
+                    egui::Button::new(l.settings_btn)).clicked() {
                     self.show_settings = true;
                 }
-                if ui.button("🔌 Плагіни Claude Code").clicked() {
+                if ui.add_sized([ui.available_width(), 28.0],
+                    egui::Button::new(l.plugins_btn)).clicked() {
                     self.show_plugin_manager = true;
                     if self.plugins.is_empty() {
                         self.refresh_plugins();
                     }
                 }
-                ui.add_space(16.0);
+                ui.add_space(10.0);
 
+                // ── Project controls ──────────────────────────────────────────
                 ui.horizontal(|ui| {
-                    if ui.button("+ Папка").clicked() {
+                    if ui.button(l.add_folder).clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.add_project(path);
                         }
@@ -1195,8 +1624,9 @@ impl eframe::App for MnemosyneApp {
                     });
                 }
 
-                ui.add_space(12.0);
-                ui.label(egui::RichText::new("ПРОЄКТИ").weak().size(11.0));
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(l.projects_heading.to_uppercase()).weak().size(10.0));
+                ui.add_space(2.0);
                 let projects: Vec<(String, String)> = self
                     .state
                     .projects
@@ -1241,17 +1671,19 @@ impl eframe::App for MnemosyneApp {
                 }
 
                 if self.selected_project().is_some() {
-                    if ui.button("📄 Файли проєкту").clicked() {
+                    if ui.add_sized([ui.available_width(), 24.0],
+                        egui::Button::new("📄 Файли проєкту")).clicked() {
                         self.show_project_files = true;
                         self.refresh_project_files();
                     }
-                    ui.add_space(16.0);
+                    ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("ЧАТИ").weak().size(11.0));
-                        if ui.small_button("+").clicked() {
+                        ui.label(egui::RichText::new("ЧАТИ").weak().size(10.0));
+                        if ui.small_button("＋").on_hover_text(l.new_chat).clicked() {
                             self.create_chat();
                         }
                     });
+                    ui.add_space(2.0);
                     let chats: Vec<(String, String)> = self
                         .selected_project()
                         .map(|project| {
@@ -1262,6 +1694,9 @@ impl eframe::App for MnemosyneApp {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    if chats.is_empty() {
+                        ui.weak(l.no_chats);
+                    }
                     for (id, title) in chats {
                         let selected = self.state.selected_chat.as_deref() == Some(id.as_str());
                         if ui
@@ -1300,15 +1735,23 @@ impl eframe::App for MnemosyneApp {
         let mut request_chat_clear = None;
         let mut request_chat_export = None;
         egui::CentralPanel::default().show(ctx, |ui| {
+            // ── Status bar ────────────────────────────────────────────────────
             if let Some(status) = self.status.clone() {
-                ui.colored_label(egui::Color32::LIGHT_RED, status);
+                let color = if status.starts_with("✓") || status.starts_with("PDF відкрито") || status.starts_with("Файл збережено") {
+                    egui::Color32::from_rgb(80, 200, 120)
+                } else if status.starts_with("✗") || status.starts_with("Помилка") || status.starts_with("Не вдалося") {
+                    egui::Color32::from_rgb(220, 80, 80)
+                } else {
+                    ui.visuals().text_color()
+                };
+                ui.colored_label(color, &status);
             }
             if self.busy {
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
                             !self.cancel_requested.load(Ordering::SeqCst),
-                            egui::Button::new("Скасувати запит"),
+                            egui::Button::new(l.cancel_btn),
                         )
                         .clicked()
                     {
@@ -1317,11 +1760,11 @@ impl eframe::App for MnemosyneApp {
                     ui.weak(if self.cancel_requested.load(Ordering::SeqCst) {
                         "Очікую завершення процесу…"
                     } else {
-                        "Claude Code працює"
+                        l.thinking_label
                     });
                 });
                 if let Some(tool) = &self.current_tool {
-                    ui.weak(format!("Активний інструмент: {tool}"));
+                    ui.weak(format!("🔧 {tool}"));
                 }
             }
 
@@ -1368,22 +1811,22 @@ impl eframe::App for MnemosyneApp {
                             }
                         } else {
                             ui.heading(title.clone());
-                            if ui.small_button("Експорт Markdown").clicked() {
+                            if ui.small_button(l.export_chat).clicked() {
                                 request_chat_export =
                                     Some((project_id.clone(), chat_id.clone()));
                             }
-                            if ui.small_button("Перейменувати").clicked() {
+                            if ui.small_button(l.rename_chat).clicked() {
                                 start_chat_rename = Some((chat_id.clone(), title.clone()));
                             }
                             if ui
-                                .add_enabled(!self.busy, egui::Button::new("Очистити історію"))
+                                .add_enabled(!self.busy, egui::Button::new(l.clear_history))
                                 .clicked()
                             {
                                 request_chat_clear =
                                     Some((project_id.clone(), chat_id.clone(), title.clone()));
                             }
                             if ui
-                                .add_enabled(!self.busy, egui::Button::new("Видалити чат"))
+                                .add_enabled(!self.busy, egui::Button::new(l.delete_chat))
                                 .clicked()
                             {
                                 request_chat_delete =
@@ -1406,7 +1849,7 @@ impl eframe::App for MnemosyneApp {
                                 };
                                 egui::Frame::group(ui.style()).fill(fill).show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.strong(if is_user { "Ти" } else { "Claude" });
+                                        ui.strong(if is_user { l.you_label } else { l.claude_label });
                                         ui.weak(time);
                                     });
                                     if !content.is_empty() && is_user {
@@ -1431,13 +1874,13 @@ impl eframe::App for MnemosyneApp {
                                     egui::Frame::group(ui.style())
                                         .fill(ui.visuals().faint_bg_color)
                                         .show(ui, |ui| {
-                                            ui.strong("Claude · відповідь генерується");
+                                            ui.strong(if self.state.lang == AppLang::En { "Claude · generating response" } else { "Claude · відповідь генерується" });
                                             ui.label(&streaming_content);
                                         });
                                 }
                                 ui.horizontal(|ui| {
                                     ui.spinner();
-                                    ui.label("Claude думає…");
+                                    ui.label(l.thinking_label);
                                 });
                             }
                         });
@@ -1574,7 +2017,7 @@ impl eframe::App for MnemosyneApp {
                     ui.horizontal(|ui| {
                         if ui
                             .button("📎")
-                            .on_hover_text("Додати файли або фото")
+                            .on_hover_text(l.attach_btn)
                             .clicked()
                         {
                             self.add_attachments();
@@ -1582,7 +2025,7 @@ impl eframe::App for MnemosyneApp {
                         let input = ui.add(
                             egui::TextEdit::multiline(&mut self.draft)
                                 .desired_rows(3)
-                                .hint_text("Напиши Claude..."),
+                                .hint_text(l.chat_placeholder),
                         );
                         let enter_pressed = input.has_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter))
@@ -1591,25 +2034,29 @@ impl eframe::App for MnemosyneApp {
                             self.send_message();
                         }
                         if ui
-                            .add_enabled(!self.busy, egui::Button::new("Надіслати"))
+                            .add_enabled(!self.busy, egui::Button::new(l.send_btn))
                             .clicked()
                         {
                             self.send_message();
                         }
                     });
-                    ui.weak("Enter — надіслати · Shift+Enter — новий рядок");
+                    ui.weak(if self.state.lang == AppLang::En {
+                        "Enter to send · Shift+Enter for new line"
+                    } else {
+                        "Enter — надіслати · Shift+Enter — новий рядок"
+                    });
                 }
                 None => {
                     ui.vertical_centered(|ui| {
                         ui.add_space(100.0);
                         if self.selected_project().is_some() {
-                            ui.heading("У проєкті ще немає чатів");
-                            if ui.button("Створити чат").clicked() {
+                            ui.heading(l.no_chats);
+                            if ui.button(l.new_chat).clicked() {
                                 request_create_chat = true;
                             }
                         } else {
-                            ui.heading("Почни з проєкту");
-                            ui.label("Додай папку з кодом або створи новий проєкт.");
+                            ui.heading(l.no_project);
+                            ui.label(l.select_or_create);
                         }
                     });
                 }
@@ -2188,20 +2635,49 @@ impl eframe::App for MnemosyneApp {
 
         if self.show_settings {
             let mut show_settings = self.show_settings;
-            egui::Window::new("Налаштування AI")
+            egui::Window::new(l.settings_title)
                 .open(&mut show_settings)
                 .resizable(true)
-                .default_width(520.0)
+                .default_width(540.0)
                 .show(ctx, |ui| {
-                    ui.heading("FreeLLMAPI · безкоштовні моделі");
-                    ui.label("Завантажте й запустіть офіційний FreeLLMAPI з GitHub Releases. Після першого запуску додайте ключі безкоштовних провайдерів у його dashboard, а unified API key збережіть тут.");
+                    // ── Appearance & Language ─────────────────────────────────
+                    ui.heading(if self.state.lang == AppLang::En { "🎨 Appearance & Language" } else { "🎨 Вигляд та мова" });
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}:", l.theme_label));
+                        if ui.selectable_value(&mut self.state.dark_theme, true, l.theme_dark).clicked() {
+                            self.save();
+                        }
+                        if ui.selectable_value(&mut self.state.dark_theme, false, l.theme_light).clicked() {
+                            self.save();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}:", l.lang_label));
+                        if ui.selectable_value(&mut self.state.lang, AppLang::Uk, "🇺🇦 Українська").clicked() {
+                            self.save();
+                        }
+                        if ui.selectable_value(&mut self.state.lang, AppLang::En, "🇬🇧 English").clicked() {
+                            self.save();
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+
+                    // ── FreeLLMAPI ───────────────────────────────────────────
+                    ui.heading(format!("🌐 {}", l.freellmapi_section));
+                    ui.label(if self.state.lang == AppLang::En {
+                        "FreeLLMAPI connects to free model providers (Gemini, OpenRouter, DeepSeek). Save your unified API key below."
+                    } else {
+                        "FreeLLMAPI підключається до безкоштовних провайдерів (Gemini, OpenRouter, DeepSeek). Збережіть свій unified API key нижче."
+                    });
                     if ui
                         .add_enabled(
                             !self.installing_companion,
                             egui::Button::new(if self.installing_companion {
-                                "Завантажую та запускаю FreeLLMAPI…"
+                                if self.state.lang == AppLang::En { "Downloading & launching FreeLLMAPI…" } else { "Завантажую та запускаю FreeLLMAPI…" }
                             } else {
-                                "Завантажити / запустити FreeLLMAPI"
+                                l.freellmapi_install
                             }),
                         )
                         .clicked()
@@ -2209,25 +2685,25 @@ impl eframe::App for MnemosyneApp {
                         self.install_freellmapi_companion();
                     }
                     ui.add_space(8.0);
-                    ui.label("Адреса сервера (Desktop: 31415 · server: 3001)");
+                    ui.label(format!("{}: (Desktop: 31415 · server: 3001)", l.freellmapi_url));
                     ui.text_edit_singleline(&mut self.state.freellmapi.base_url);
-                    ui.label("Unified API key");
+                    ui.label(l.freellmapi_key);
                     ui.add(
                         egui::TextEdit::singleline(&mut self.freellmapi_key_draft)
                             .password(true)
                             .hint_text("freellmapi-…"),
                     );
                     ui.horizontal(|ui| {
-                        if ui.button("Зберегти ключ").clicked() {
+                        if ui.button(l.freellmapi_save_key).clicked() {
                             self.save_provider_key();
                         }
                         if ui
                             .add_enabled(
                                 !self.checking_provider,
                                 egui::Button::new(if self.checking_provider {
-                                    "Перевіряю…"
+                                    if self.state.lang == AppLang::En { "Checking…" } else { "Перевіряю…" }
                                 } else {
-                                    "Перевірити підключення"
+                                    l.freellmapi_check
                                 }),
                             )
                             .clicked()
@@ -2237,27 +2713,137 @@ impl eframe::App for MnemosyneApp {
                             }
                             self.check_freellmapi();
                         }
+                        if ui
+                            .add_enabled(
+                                !self.testing_connection && self.state.freellmapi.connected,
+                                egui::Button::new(if self.testing_connection {
+                                    if self.state.lang == AppLang::En { "Testing…" } else { "Тестую…" }
+                                } else {
+                                    l.freellmapi_test
+                                }),
+                            )
+                            .on_hover_text(if self.state.lang == AppLang::En { "Send test ping to model via FreeLLMAPI" } else { "Надіслати тестовий запит до моделі через FreeLLMAPI" })
+                            .clicked()
+                        {
+                            self.test_freellmapi_connection();
+                        }
                     });
                     if self.state.freellmapi.connected {
                         ui.colored_label(
                             egui::Color32::LIGHT_GREEN,
                             format!(
-                                "Підключено · {} доступних моделей",
-                                self.state.freellmapi.ready_models.len()
+                                "{} · {} {}",
+                                l.freellmapi_connected,
+                                self.state.freellmapi.ready_models.len(),
+                                if self.state.lang == AppLang::En { "models ready" } else { "доступних моделей" }
                             ),
                         );
                     } else {
-                        ui.weak("Не підключено");
+                        ui.weak(l.freellmapi_disconnected);
                     }
-                    ui.weak("У FreeLLMAPI налаштуйте Keys → Anthropic на auto і Fallback Chain лише на безкоштовні провайдери. Вимкніть платні custom endpoints. Це зменшує ризик списань, але остаточні тарифи й квоти контролює сам провайдер; додаткові акаунти не обходять його правила.");
+                    ui.weak(l.freellmapi_key_hint);
 
                     if !self.state.freellmapi.ready_models.is_empty() {
                         ui.add_space(8.0);
-                        ui.collapsing("Моделі у FreeLLMAPI", |ui| {
+                        ui.collapsing(if self.state.lang == AppLang::En { "Available FreeLLMAPI Models" } else { "Моделі у FreeLLMAPI" }, |ui| {
                             for model in &self.state.freellmapi.ready_models {
                                 ui.label(format!("• {model}"));
                             }
                         });
+                    }
+
+                    ui.add_space(12.0);
+                    ui.separator();
+
+                    // ── Claude Code CLI ───────────────────────────────────────
+                    ui.heading(format!("💻 {}", l.claude_cli_section));
+                    let claude_installed = is_claude_installed();
+                    if claude_installed {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, format!("{} на PATH", l.claude_cli_found));
+                    } else {
+                        ui.colored_label(egui::Color32::LIGHT_RED, l.claude_cli_missing);
+                        ui.label(if self.state.lang == AppLang::En {
+                            "Install Claude Code CLI to send queries to models."
+                        } else {
+                            "Встановіть Claude Code CLI, щоб надсилати запити до моделей."
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(
+                                !self.installing_claude_cli,
+                                egui::Button::new(if self.installing_claude_cli {
+                                    if self.state.lang == AppLang::En { "Installing Claude Code CLI…" } else { "Встановлюю Claude Code CLI…" }
+                                } else {
+                                    if self.state.lang == AppLang::En { "⚡ Auto-install via npm" } else { "⚡ Автоматично встановити через npm" }
+                                }),
+                            ).on_hover_text("npm install -g @anthropic-ai/claude-code").clicked() {
+                                self.install_claude_cli_background();
+                            }
+                            if ui.hyperlink_to(
+                                l.claude_cli_install_hint,
+                                "https://docs.anthropic.com/en/docs/claude-code",
+                            ).clicked() {
+                                let _ = open::that("https://docs.anthropic.com/en/docs/claude-code");
+                            }
+                        });
+                    }
+
+                    ui.add_space(12.0);
+                    ui.separator();
+
+                    // ── Decod MCP ─────────────────────────────────────────────
+                    ui.heading(format!("⚙ {}", l.decod_section));
+                    let mut decod_enabled = self.state.decod_mcp_enabled;
+                    if ui.checkbox(&mut decod_enabled, l.decod_enable).changed() {
+                        self.state.decod_mcp_enabled = decod_enabled;
+                        self.save();
+                    }
+                    ui.label(format!("{}:", l.decod_path));
+                    if ui.text_edit_singleline(&mut self.state.decod_mcp_path).changed() {
+                        self.save();
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button(l.decod_check).clicked() {
+                            let path = self.state.decod_mcp_path.clone();
+                            match Command::new("python")
+                                .args([&path, "--version"])
+                                .output()
+                            {
+                                Ok(output) if output.status.success() => {
+                                    self.decod_mcp_check_status = Some(format!(
+                                        "✓ Decod MCP: {}",
+                                        String::from_utf8_lossy(&output.stdout).trim()
+                                    ));
+                                }
+                                Ok(output) => {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    if !stderr.trim().is_empty() {
+                                        self.decod_mcp_check_status = Some(format!(
+                                            "✗ Помилка: {}",
+                                            stderr.trim()
+                                        ));
+                                    } else {
+                                        self.decod_mcp_check_status = Some(
+                                            "✗ Скрипт завершився з помилкою".to_owned(),
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    self.decod_mcp_check_status = Some(format!(
+                                        "✗ Не вдалося запустити: {error}"
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(status) = &self.decod_mcp_check_status {
+                            if status.starts_with('✓') {
+                                ui.colored_label(egui::Color32::LIGHT_GREEN, status);
+                            } else {
+                                ui.colored_label(egui::Color32::LIGHT_RED, status);
+                            }
+                        }
+                    });
+                    if self.state.decod_mcp_enabled {
+                        ui.weak(l.decod_active_hint);
                     }
                 });
             self.show_settings = show_settings;
@@ -2471,6 +3057,21 @@ fn is_supported_project_pdf_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+}
+
+fn estimate_pdf_page_count(path: &Path) -> Option<usize> {
+    const SCAN_BYTES: usize = 1024;
+    let mut file = fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; SCAN_BYTES];
+    let n = std::io::Read::read(&mut file, &mut buf).ok()?;
+    let chunk = &buf[..n];
+    // Count occurrences of b"/Type /Page" (or "/Type/Page") as a quick estimate
+    let needle1 = b"/Type /Page";
+    let needle2 = b"/Type/Page";
+    let count1 = chunk.windows(needle1.len()).filter(|w| *w == needle1).count();
+    let count2 = chunk.windows(needle2.len()).filter(|w| *w == needle2).count();
+    let total = count1 + count2;
+    if total > 0 { Some(total) } else { None }
 }
 
 fn canonical_project_file(project_root: &Path, relative_path: &Path) -> Result<PathBuf, String> {
@@ -3346,6 +3947,7 @@ fn run_claude(
     chat_id: &str,
     active_child: &Arc<Mutex<Option<GroupChild>>>,
     cancel_requested: &Arc<AtomicBool>,
+    mcp_config: Option<String>,
 ) -> Result<String, String> {
     let has_attachments = messages
         .iter()
@@ -3425,6 +4027,9 @@ fn run_claude(
     }
     if let Some(staging) = &staging {
         command.args(["--add-dir", staging.path.to_string_lossy().as_ref()]);
+    }
+    if let Some(mcp_json) = &mcp_config {
+        command.arg("--mcp-config").arg(mcp_json);
     }
     let mut child = command
         .current_dir(project_path)
@@ -4313,8 +4918,71 @@ impl Drop for AttachmentStaging {
     }
 }
 
+fn find_claude_binary() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        if Command::new("cmd.exe")
+            .args(["/D", "/C", "claude", "--version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from("claude"));
+        }
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_default();
+        let candidates = [
+            format!("{appdata}\\npm\\claude.cmd"),
+            format!("{userprofile}\\.claude\\local\\claude.exe"),
+            format!("{userprofile}\\AppData\\Local\\Programs\\Claude\\claude.exe"),
+        ];
+        for candidate in &candidates {
+            let p = PathBuf::from(candidate);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if Command::new("claude")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Some(PathBuf::from("claude"));
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidates = [
+            format!("{home}/.local/bin/claude"),
+            format!("{home}/.claude/local/claude"),
+            format!("{home}/.npm-global/bin/claude"),
+            "/usr/local/bin/claude".to_string(),
+            "/usr/bin/claude".to_string(),
+        ];
+        for candidate in &candidates {
+            let p = PathBuf::from(candidate);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(windows)]
 fn claude_command() -> Command {
+    if let Some(bin) = find_claude_binary() {
+        let path_str = bin.to_string_lossy();
+        if path_str.ends_with(".cmd") || path_str.ends_with(".bat") {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/C", &path_str]);
+            return command;
+        } else if bin != Path::new("claude") {
+            return Command::new(bin);
+        }
+    }
     let mut command = Command::new("cmd.exe");
     command.args(["/D", "/C", "claude"]);
     command
@@ -4322,11 +4990,99 @@ fn claude_command() -> Command {
 
 #[cfg(not(windows))]
 fn claude_command() -> Command {
+    if let Some(bin) = find_claude_binary() {
+        return Command::new(bin);
+    }
     Command::new("claude")
 }
 
-fn run_approval_hook(address: &str, token: &str) -> Result<(), String> {
-    let address: SocketAddr = address
+fn is_claude_installed() -> bool {
+    find_claude_binary().is_some()
+}
+
+fn install_claude_cli() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "npm install -g @anthropic-ai/claude-code"])
+            .output()
+            .map_err(|e| format!("Не вдалося запустити npm (перевірте встановлення Node.js): {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(if stderr.trim().is_empty() {
+                "npm install завершився з помилкою. Спробуйте вручну: npm install -g @anthropic-ai/claude-code".to_owned()
+            } else {
+                format!("npm error: {}", stderr.trim())
+            })
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("sh")
+            .args(["-c", "npm install -g @anthropic-ai/claude-code || (curl -fsSL https://claude.ai/install.sh | bash)"])
+            .output()
+            .map_err(|e| format!("Не вдалося запустити інсталятор: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(if stderr.trim().is_empty() {
+                "Помилка встановлення. Спробуйте вручну: npm install -g @anthropic-ai/claude-code".to_owned()
+            } else {
+                format!("Error: {}", stderr.trim())
+            })
+        }
+    }
+}
+
+fn test_freellmapi_round_trip(
+    base_url: &str,
+    api_key: &str,
+    first_model: Option<&str>,
+) -> Result<String, String> {
+    let model = first_model
+        .filter(|m| !m.is_empty())
+        .unwrap_or("claude-sonnet-4-5");
+    let url = format!("{base_url}/v1/messages");
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "ping"}]
+    });
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| format!("Не вдалося створити HTTP-клієнт: {error}"))?
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .map_err(|error| format!("Не вдалося з'єднатися з FreeLLMAPI: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "FreeLLMAPI відповів HTTP {} для тестового запиту",
+            response.status()
+        ));
+    }
+    Ok(model.to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn check_linux_desktop_env() -> Option<String> {
+    if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
+        None
+    } else {
+        Some(
+            "Не знайдено змінну середовища DISPLAY або WAYLAND_DISPLAY. \
+             Запустіть програму з графічного середовища."
+                .to_owned(),
+        )
+    }
+}
+
+fn run_approval_hook(address: &str, token: &str) -> Result<(), String> {    let address: SocketAddr = address
         .parse()
         .map_err(|error| format!("Некоректна адреса підтвердження Mnemosyne: {error}"))?;
     let mut input = Vec::new();
@@ -4379,6 +5135,13 @@ fn main() -> eframe::Result<()> {
         }
         return Ok(());
     }
+    #[cfg(target_os = "linux")]
+    let linux_desktop_warning = check_linux_desktop_env();
+    #[cfg(not(target_os = "linux"))]
+    let linux_desktop_warning: Option<String> = None;
+    if let Some(ref msg) = linux_desktop_warning {
+        eprintln!("{msg}");
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 760.0])
@@ -4388,7 +5151,13 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Mnemosyne",
         options,
-        Box::new(|_creation_context| Ok(Box::new(MnemosyneApp::new()))),
+        Box::new(move |_creation_context| {
+            let mut app = MnemosyneApp::new();
+            if let Some(msg) = linux_desktop_warning {
+                app.status = Some(msg);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 
