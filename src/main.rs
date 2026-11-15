@@ -40,6 +40,20 @@ const MAX_PROJECT_SCAN_DEPTH: usize = 6;
 const MAX_APPROVAL_HOOK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_APPROVAL_RESPONSE_BYTES: usize = 1024 * 1024;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[inline]
+fn silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 // ── Localisation ─────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,6 +405,8 @@ struct FreeLlmApiSettings {
     base_url: String,
     connected: bool,
     ready_models: Vec<String>,
+    #[serde(default)]
+    selected_model: Option<String>,
 }
 
 impl Default for FreeLlmApiSettings {
@@ -399,6 +415,7 @@ impl Default for FreeLlmApiSettings {
             base_url: "http://127.0.0.1:31415".to_owned(),
             connected: false,
             ready_models: Vec::new(),
+            selected_model: None,
         }
     }
 }
@@ -1240,7 +1257,8 @@ impl MnemosyneApp {
                 self.show_settings = true;
                 return;
             }
-            (self.state.freellmapi.base_url.clone(), key, None)
+            let custom = self.state.freellmapi.selected_model.clone();
+            (self.state.freellmapi.base_url.clone(), key, custom)
         };
         let content = self.draft.trim().to_owned();
         if content.is_empty() && self.pending_attachments.is_empty() {
@@ -1490,11 +1508,11 @@ impl MnemosyneApp {
 
             // 1. Update Claude Code CLI
             #[cfg(windows)]
-            let cli_res = Command::new("cmd.exe")
+            let cli_res = silent_command("cmd.exe")
                 .args(["/D", "/C", "npm update -g @anthropic-ai/claude-code"])
                 .output();
             #[cfg(not(windows))]
-            let cli_res = Command::new("sh")
+            let cli_res = silent_command("sh")
                 .args(["-c", "npm update -g @anthropic-ai/claude-code"])
                 .output();
 
@@ -1508,12 +1526,12 @@ impl MnemosyneApp {
             let decod_dir = Path::new(&decod_path).parent().and_then(|p| p.parent());
             if let Some(dir) = decod_dir {
                 if dir.join(".git").exists() {
-                    let _ = Command::new("git")
+                    let _ = silent_command("git")
                         .current_dir(dir)
                         .args(["pull", "origin", "main"])
                         .output();
                 }
-                let _ = Command::new("python")
+                let _ = silent_command("python")
                     .args(["-m", "pip", "install", "--upgrade", "frida", "lief", "capstone", "psutil", "pyright"])
                     .output();
                 msgs.push("✓ Decod RE рушій оновлено".to_string());
@@ -1556,7 +1574,7 @@ impl MnemosyneApp {
                 || project_path.join("setup.py").exists();
 
             if is_rust {
-                match Command::new("cargo")
+                match silent_command("cargo")
                     .current_dir(&project_path)
                     .args(["check", "--message-format=short"])
                     .output()
@@ -1587,7 +1605,7 @@ impl MnemosyneApp {
                     }
                 }
             } else if is_python {
-                let res = Command::new("python")
+                let res = silent_command("python")
                     .args(["-m", "compileall", "-q", "."])
                     .current_dir(&project_path)
                     .output();
@@ -2490,30 +2508,41 @@ impl eframe::App for MnemosyneApp {
                     let mut settings_changed = false;
                     ui.horizontal(|ui| {
                         ui.label("Модель:");
-                        egui::ComboBox::from_id_salt("claude-model-family")
-                            .selected_text(self.state.claude_model.label())
+                        let model_label = if let Some(ref m) = self.state.freellmapi.selected_model {
+                            m.clone()
+                        } else {
+                            self.state.claude_model.label().to_owned()
+                        };
+                        egui::ComboBox::from_id_salt("chat-model-selector")
+                            .selected_text(&model_label)
                             .show_ui(ui, |ui| {
-                                settings_changed |= ui
-                                    .selectable_value(
-                                        &mut self.state.claude_model,
-                                        ClaudeModel::Sonnet,
-                                        "Sonnet",
-                                    )
-                                    .changed();
-                                settings_changed |= ui
-                                    .selectable_value(
-                                        &mut self.state.claude_model,
-                                        ClaudeModel::Opus,
-                                        "Opus",
-                                    )
-                                    .changed();
-                                settings_changed |= ui
-                                    .selectable_value(
-                                        &mut self.state.claude_model,
-                                        ClaudeModel::Haiku,
-                                        "Haiku",
-                                    )
-                                    .changed();
+                                ui.label(egui::RichText::new("Claude").weak());
+                                for (model_variant, name) in [
+                                    (ClaudeModel::Sonnet, "Sonnet"),
+                                    (ClaudeModel::Opus, "Opus"),
+                                    (ClaudeModel::Haiku, "Haiku"),
+                                ] {
+                                    let is_active = self.state.freellmapi.selected_model.is_none()
+                                        && self.state.claude_model == model_variant;
+                                    if ui.selectable_label(is_active, name).clicked() {
+                                        self.state.freellmapi.selected_model = None;
+                                        self.state.claude_model = model_variant;
+                                        settings_changed = true;
+                                    }
+                                }
+
+                                if !self.state.freellmapi.ready_models.is_empty() {
+                                    ui.separator();
+                                    ui.label(egui::RichText::new("FreeLLMAPI").weak());
+                                    for ready_m in &self.state.freellmapi.ready_models {
+                                        let is_active = self.state.freellmapi.selected_model.as_deref()
+                                            == Some(ready_m.as_str());
+                                        if ui.selectable_label(is_active, ready_m).clicked() {
+                                            self.state.freellmapi.selected_model = Some(ready_m.clone());
+                                            settings_changed = true;
+                                        }
+                                    }
+                                }
                             });
 
                         ui.separator();
@@ -3318,8 +3347,32 @@ impl eframe::App for MnemosyneApp {
 
                     if !self.state.freellmapi.ready_models.is_empty() {
                         ui.add_space(8.0);
-                        ui.collapsing(if self.state.lang == AppLang::En { "Available FreeLLMAPI Models" } else { "Моделі у FreeLLMAPI" }, |ui| {
-                            for model in &self.state.freellmapi.ready_models {
+                        let mut model_pick_changed = false;
+                        let ready_models = self.state.freellmapi.ready_models.clone();
+                        ui.horizontal(|ui| {
+                            ui.label("Вибрана модель:");
+                            let sel_label = self.state.freellmapi.selected_model.as_deref().unwrap_or("Claude (Default)");
+                            egui::ComboBox::from_id_salt("freellmapi-selected-model-combo")
+                                .selected_text(sel_label)
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(self.state.freellmapi.selected_model.is_none(), "Claude (Default)").clicked() {
+                                        self.state.freellmapi.selected_model = None;
+                                        model_pick_changed = true;
+                                    }
+                                    for m in &ready_models {
+                                        let is_sel = self.state.freellmapi.selected_model.as_deref() == Some(m.as_str());
+                                        if ui.selectable_label(is_sel, m).clicked() {
+                                            self.state.freellmapi.selected_model = Some(m.clone());
+                                            model_pick_changed = true;
+                                        }
+                                    }
+                                });
+                        });
+                        if model_pick_changed {
+                            self.save();
+                        }
+                        ui.collapsing(if self.state.lang == AppLang::En { "Available FreeLLMAPI Models" } else { "Усі моделі у FreeLLMAPI" }, |ui| {
+                            for model in &ready_models {
                                 ui.label(format!("• {model}"));
                             }
                         });
@@ -3464,7 +3517,7 @@ impl eframe::App for MnemosyneApp {
                     ui.horizontal(|ui| {
                         if ui.button(l.decod_check).clicked() {
                             let path = self.state.decod_mcp_path.clone();
-                            match Command::new("python")
+                            match silent_command("python")
                                 .args([&path, "--version"])
                                 .output()
                             {
@@ -4797,7 +4850,7 @@ fn run_claude(
         .current_dir(project_path)
         .env("ANTHROPIC_BASE_URL", api_base_url)
         .env("ANTHROPIC_AUTH_TOKEN", api_key)
-        .env_remove("ANTHROPIC_API_KEY")
+        .env("ANTHROPIC_API_KEY", api_key)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -5125,6 +5178,7 @@ fn fetch_ready_models(base_url: &str, api_key: &str) -> Result<Vec<String>, Stri
         .build()
         .map_err(|error| format!("Не вдалося створити HTTP-клієнт: {error}"))?
         .get(url)
+        .header("x-api-key", api_key)
         .bearer_auth(api_key)
         .send()
         .map_err(|error| {
@@ -5695,7 +5749,7 @@ fn install_official_freellmapi() -> Result<(), String> {
             .map_err(|error| format!("Не вдалося дозволити запуск AppImage: {error}"))?;
     }
 
-    Command::new(&asset_path).spawn().map_err(|error| {
+    silent_command(&asset_path).spawn().map_err(|error| {
         format!(
             "SHA-256 перевірено, але не вдалося запустити офіційний інсталятор {}: {error}",
             asset_path.display()
@@ -5747,7 +5801,7 @@ fn find_claude_binary() -> Option<PathBuf> {
                 return Some(p);
             }
         }
-        if Command::new("cmd.exe")
+        if silent_command("cmd.exe")
             .args(["/D", "/C", "claude", "--version"])
             .output()
             .map(|o| o.status.success())
@@ -5758,7 +5812,7 @@ fn find_claude_binary() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        if Command::new("claude")
+        if silent_command("claude")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -5789,14 +5843,14 @@ fn claude_command() -> Command {
     if let Some(bin) = find_claude_binary() {
         let path_str = bin.to_string_lossy();
         if path_str.ends_with(".cmd") || path_str.ends_with(".bat") {
-            let mut command = Command::new("cmd.exe");
+            let mut command = silent_command("cmd.exe");
             command.args(["/D", "/C", &path_str]);
             return command;
         } else if bin != Path::new("claude") {
-            return Command::new(bin);
+            return silent_command(bin);
         }
     }
-    let mut command = Command::new("cmd.exe");
+    let mut command = silent_command("cmd.exe");
     command.args(["/D", "/C", "claude"]);
     command
 }
@@ -5804,9 +5858,9 @@ fn claude_command() -> Command {
 #[cfg(not(windows))]
 fn claude_command() -> Command {
     if let Some(bin) = find_claude_binary() {
-        return Command::new(bin);
+        return silent_command(bin);
     }
-    Command::new("claude")
+    silent_command("claude")
 }
 
 fn is_claude_installed() -> bool {
@@ -5816,7 +5870,7 @@ fn is_claude_installed() -> bool {
 fn install_claude_cli() -> Result<(), String> {
     #[cfg(windows)]
     {
-        let output = Command::new("cmd.exe")
+        let output = silent_command("cmd.exe")
             .args(["/D", "/C", "npm install -g @anthropic-ai/claude-code"])
             .output()
             .map_err(|e| format!("Не вдалося запустити npm (перевірте встановлення Node.js): {e}"))?;
@@ -5833,7 +5887,7 @@ fn install_claude_cli() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let output = Command::new("sh")
+        let output = silent_command("sh")
             .args(["-c", "npm install -g @anthropic-ai/claude-code || (curl -fsSL https://claude.ai/install.sh | bash)"])
             .output()
             .map_err(|e| format!("Не вдалося запустити інсталятор: {e}"))?;
@@ -5869,6 +5923,7 @@ fn test_freellmapi_round_trip(
         .build()
         .map_err(|error| format!("Не вдалося створити HTTP-клієнт: {error}"))?
         .post(&url)
+        .header("x-api-key", api_key)
         .bearer_auth(api_key)
         .json(&body)
         .send()
@@ -6363,11 +6418,11 @@ mod tests {
     #[test]
     fn can_terminate_the_claude_process_group() {
         let mut command = if cfg!(windows) {
-            let mut command = Command::new("cmd.exe");
+            let mut command = silent_command("cmd.exe");
             command.args(["/D", "/C", "ping -n 20 127.0.0.1 >NUL"]);
             command
         } else {
-            let mut command = Command::new("sh");
+            let mut command = silent_command("sh");
             command.args(["-c", "sleep 20"]);
             command
         };

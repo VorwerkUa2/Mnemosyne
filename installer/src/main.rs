@@ -2,6 +2,20 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[inline]
+fn silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 const EMBEDDED_BINARY: &[u8] = include_bytes!("../../target/release/mnemosyne.exe");
 
 fn main() {
@@ -69,13 +83,13 @@ rmdir /s /q "%~dp0" >nul 2>&1
         install_dir.display().to_string().replace('\\', "\\\\")
     );
 
-    let _ = Command::new("powershell")
+    let _ = silent_command("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
         .output();
     println!("✓ Shortcuts created.");
 
     println!("Checking Claude Code CLI...");
-    let claude_check = Command::new("cmd.exe")
+    let claude_check = silent_command("cmd.exe")
         .args(["/D", "/C", "claude --version"])
         .output();
     if claude_check.map(|o| o.status.success()).unwrap_or(false) {
