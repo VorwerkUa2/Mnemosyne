@@ -27,6 +27,16 @@ fn main() {
         return;
     }
 
+    let uninstall_script = r#"@echo off
+taskkill /f /im mnemosyne.exe >nul 2>&1
+timeout /t 1 /nobreak >nul
+del "%userprofile%\Desktop\Mnemosyne.lnk" >nul 2>&1
+del "%appdata%\Microsoft\Windows\Start Menu\Programs\Mnemosyne.lnk" >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Mnemosyne" /f >nul 2>&1
+rmdir /s /q "%~dp0" >nul 2>&1
+"#;
+    let _ = fs::write(install_dir.join("uninstall.cmd"), uninstall_script);
+
     println!("Creating desktop and start menu shortcuts...");
     let script = format!(
         r#"
@@ -50,6 +60,10 @@ fn main() {
         New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.1.0' -PropertyType String -Force | Out-Null
         New-ItemProperty -Path $uninstallKey -Name InstallLocation -Value '{1}' -PropertyType String -Force | Out-Null
         New-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value '{0}' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstallKey -Name UninstallString -Value 'cmd.exe /c "{1}\\uninstall.cmd"' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstallKey -Name QuietUninstallString -Value 'cmd.exe /c "{1}\\uninstall.cmd"' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $uninstallKey -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
         "#,
         exe_path.display().to_string().replace('\\', "\\\\"),
         install_dir.display().to_string().replace('\\', "\\\\")

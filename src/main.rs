@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -701,6 +703,7 @@ struct MnemosyneApp {
     diagnostics_tx: Sender<DiagnosticsResult>,
     diagnostics_rx: Receiver<DiagnosticsResult>,
     installing_claude_cli: bool,
+    claude_installed: bool,
     testing_connection: bool,
     updating_components: bool,
     running_diagnostics: bool,
@@ -790,6 +793,7 @@ impl MnemosyneApp {
             diagnostics_tx,
             diagnostics_rx,
             testing_connection: false,
+            claude_installed: is_claude_installed(),
             running_diagnostics: false,
             diagnostics_result: None,
             decod_mcp_check_status: None,
@@ -1862,6 +1866,7 @@ impl MnemosyneApp {
         }
         while let Ok(response) = self.claude_install_rx.try_recv() {
             self.installing_claude_cli = false;
+            self.claude_installed = is_claude_installed();
             self.status = Some(match response.result {
                 Ok(()) => "✓ Claude Code CLI успішно встановлено!".to_owned(),
                 Err(error) => format!("✗ Помилка встановлення Claude Code CLI: {error}"),
@@ -1948,8 +1953,10 @@ impl eframe::App for MnemosyneApp {
         // ── Apply theme ───────────────────────────────────────────────────────
         if self.state.dark_theme {
             ctx.set_visuals(dark_visuals());
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
         } else {
             ctx.set_visuals(light_visuals());
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Light));
         }
 
         self.receive_result(ctx);
@@ -3385,7 +3392,7 @@ impl eframe::App for MnemosyneApp {
 
                     // ── Claude Code CLI ───────────────────────────────────────
                     ui.heading(format!("💻 {}", l.claude_cli_section));
-                    let claude_installed = is_claude_installed();
+                    let claude_installed = self.claude_installed;
                     if claude_installed {
                         ui.colored_label(egui::Color32::LIGHT_GREEN, format!("{} на PATH", l.claude_cli_found));
                     } else {
@@ -5699,6 +5706,22 @@ impl Drop for AttachmentStaging {
 fn find_claude_binary() -> Option<PathBuf> {
     #[cfg(windows)]
     {
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_default();
+        let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let candidates = [
+            format!("{appdata}\\npm\\claude.cmd"),
+            format!("{appdata}\\npm\\claude.exe"),
+            format!("{appdata}\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"),
+            format!("{localappdata}\\Programs\\Claude\\claude.exe"),
+            format!("{userprofile}\\.claude\\local\\claude.exe"),
+        ];
+        for candidate in &candidates {
+            let p = PathBuf::from(candidate);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
         if Command::new("cmd.exe")
             .args(["/D", "/C", "claude", "--version"])
             .output()
@@ -5706,19 +5729,6 @@ fn find_claude_binary() -> Option<PathBuf> {
             .unwrap_or(false)
         {
             return Some(PathBuf::from("claude"));
-        }
-        let appdata = std::env::var("APPDATA").unwrap_or_default();
-        let userprofile = std::env::var("USERPROFILE").unwrap_or_default();
-        let candidates = [
-            format!("{appdata}\\npm\\claude.cmd"),
-            format!("{userprofile}\\.claude\\local\\claude.exe"),
-            format!("{userprofile}\\AppData\\Local\\Programs\\Claude\\claude.exe"),
-        ];
-        for candidate in &candidates {
-            let p = PathBuf::from(candidate);
-            if p.exists() {
-                return Some(p);
-            }
         }
     }
     #[cfg(not(windows))]
@@ -5931,6 +5941,9 @@ fn main() -> eframe::Result<()> {
     if let Some(ref msg) = linux_desktop_warning {
         eprintln!("{msg}");
     }
+    let initial_dark_theme = load_state().map(|s| s.dark_theme).unwrap_or(true);
+    let _ = initial_dark_theme;
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1100.0, 760.0])
         .with_min_inner_size([720.0, 480.0]);
@@ -5948,8 +5961,10 @@ fn main() -> eframe::Result<()> {
             let mut app = MnemosyneApp::new();
             if app.state.dark_theme {
                 creation_context.egui_ctx.set_visuals(dark_visuals());
+                creation_context.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
             } else {
                 creation_context.egui_ctx.set_visuals(light_visuals());
+                creation_context.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Light));
             }
             if let Some(msg) = linux_desktop_warning {
                 app.status = Some(msg);
