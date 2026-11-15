@@ -2141,90 +2141,94 @@ impl eframe::App for MnemosyneApp {
                     });
                 }
 
-                ui.add_space(10.0);
-                ui.label(egui::RichText::new(l.projects_heading.to_uppercase()).weak().size(10.0));
-                ui.add_space(2.0);
-                let projects: Vec<(String, String)> = self
-                    .state
-                    .projects
-                    .iter()
-                    .map(|project| (project.id.clone(), project.name.clone()))
-                    .collect();
-                for (id, name) in projects {
-                    let selected = self.state.selected_project.as_deref() == Some(id.as_str());
-                    let clicked = ui
-                        .horizontal(|ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new(l.projects_heading.to_uppercase()).weak().size(10.0));
+                        ui.add_space(2.0);
+                        let projects: Vec<(String, String)> = self
+                            .state
+                            .projects
+                            .iter()
+                            .map(|project| (project.id.clone(), project.name.clone()))
+                            .collect();
+                        for (id, name) in projects {
+                            let selected = self.state.selected_project.as_deref() == Some(id.as_str());
                             let clicked = ui
-                                .selectable_label(selected, format!("📁 {name}"))
-                                .clicked();
-                            if selected
-                                && ui
-                                    .small_button("⋯")
-                                    .on_hover_text("Прибрати проєкт зі списку")
-                                    .clicked()
-                            {
-                                request_project_removal = Some((id.clone(), name.clone()));
+                                .horizontal(|ui| {
+                                    let clicked = ui
+                                        .selectable_label(selected, format!("📁 {name}"))
+                                        .clicked();
+                                    if selected
+                                        && ui
+                                            .small_button("⋯")
+                                            .on_hover_text("Прибрати проєкт зі списку")
+                                            .clicked()
+                                    {
+                                        request_project_removal = Some((id.clone(), name.clone()));
+                                    }
+                                    clicked
+                                })
+                                .inner;
+                            if clicked {
+                                if selected {
+                                    continue;
+                                }
+                                if self.refuse_project_change_with_unsaved_file() {
+                                    continue;
+                                }
+                                self.state.selected_project = Some(id.clone());
+                                self.state.selected_chat = None;
+                                self.open_project_file = None;
+                                self.project_files.clear();
+                                self.project_files_truncated = false;
+                                if self.show_project_files {
+                                    self.refresh_project_files();
+                                }
+                                self.save();
                             }
-                            clicked
-                        })
-                        .inner;
-                    if clicked {
-                        if selected {
-                            continue;
                         }
-                        if self.refuse_project_change_with_unsaved_file() {
-                            continue;
-                        }
-                        self.state.selected_project = Some(id.clone());
-                        self.state.selected_chat = None;
-                        self.open_project_file = None;
-                        self.project_files.clear();
-                        self.project_files_truncated = false;
-                        if self.show_project_files {
-                            self.refresh_project_files();
-                        }
-                        self.save();
-                    }
-                }
 
-                if self.selected_project().is_some() {
-                    if ui.add_sized([ui.available_width(), 24.0],
-                        egui::Button::new("📄 Файли проєкту")).clicked() {
-                        self.show_project_files = true;
-                        self.refresh_project_files();
-                    }
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("ЧАТИ").weak().size(10.0));
-                        if ui.small_button("＋").on_hover_text(l.new_chat).clicked() {
-                            self.create_chat();
+                        if self.selected_project().is_some() {
+                            if ui.add_sized([ui.available_width(), 24.0],
+                                egui::Button::new("📄 Файли проєкту")).clicked() {
+                                self.show_project_files = true;
+                                self.refresh_project_files();
+                            }
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("ЧАТИ").weak().size(10.0));
+                                if ui.small_button("＋").on_hover_text(l.new_chat).clicked() {
+                                    self.create_chat();
+                                }
+                            });
+                            ui.add_space(2.0);
+                            let chats: Vec<(String, String)> = self
+                                .selected_project()
+                                .map(|project| {
+                                    project
+                                        .chats
+                                        .iter()
+                                        .map(|chat| (chat.id.clone(), chat.title.clone()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if chats.is_empty() {
+                                ui.weak(l.no_chats);
+                            }
+                            for (id, title) in chats {
+                                let selected = self.state.selected_chat.as_deref() == Some(id.as_str());
+                                if ui
+                                    .selectable_label(selected, format!("💬 {title}"))
+                                    .clicked()
+                                {
+                                    self.state.selected_chat = Some(id);
+                                    self.save();
+                                }
+                            }
                         }
                     });
-                    ui.add_space(2.0);
-                    let chats: Vec<(String, String)> = self
-                        .selected_project()
-                        .map(|project| {
-                            project
-                                .chats
-                                .iter()
-                                .map(|chat| (chat.id.clone(), chat.title.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if chats.is_empty() {
-                        ui.weak(l.no_chats);
-                    }
-                    for (id, title) in chats {
-                        let selected = self.state.selected_chat.as_deref() == Some(id.as_str());
-                        if ui
-                            .selectable_label(selected, format!("💬 {title}"))
-                            .clicked()
-                        {
-                            self.state.selected_chat = Some(id);
-                            self.save();
-                        }
-                    }
-                }
             });
 
         if let Some((project_id, project_name)) = request_project_removal {
@@ -2251,6 +2255,136 @@ impl eframe::App for MnemosyneApp {
         let mut request_chat_delete = None;
         let mut request_chat_clear = None;
         let mut request_chat_export = None;
+
+        if self.selected_chat().is_some() {
+            let bottom_bg = if self.state.dark_theme {
+                egui::Color32::from_rgb(18, 18, 26)
+            } else {
+                egui::Color32::from_rgb(245, 245, 250)
+            };
+            let bottom_stroke = if self.state.dark_theme {
+                egui::Color32::from_rgb(32, 32, 44)
+            } else {
+                egui::Color32::from_rgb(220, 220, 230)
+            };
+
+            egui::TopBottomPanel::bottom("chat_bottom_input_panel")
+                .frame(
+                    egui::Frame::new()
+                        .fill(bottom_bg)
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .stroke(egui::Stroke::new(1.0, bottom_stroke)),
+                )
+                .show(ctx, |ui| {
+                    let mut dismiss_diagnostics = false;
+                    if let Some(diag) = &self.diagnostics_result {
+                        let col = if diag.starts_with('✓') {
+                            egui::Color32::LIGHT_GREEN
+                        } else if diag.starts_with('✗') {
+                            egui::Color32::LIGHT_RED
+                        } else {
+                            egui::Color32::LIGHT_BLUE
+                        };
+                        ui.horizontal(|ui| {
+                            ui.colored_label(col, diag);
+                            if ui.small_button("✕").clicked() {
+                                dismiss_diagnostics = true;
+                            }
+                        });
+                    }
+                    if dismiss_diagnostics {
+                        self.diagnostics_result = None;
+                    }
+
+                    let mut remove_attachment = None;
+                    if !self.pending_attachments.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            for (index, path) in self.pending_attachments.iter().enumerate() {
+                                let name = path
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("файл")
+                                    .to_owned();
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("📎 {name}"));
+                                    if ui.small_button("×").clicked() {
+                                        remove_attachment = Some(index);
+                                    }
+                                });
+                            }
+                        });
+                    }
+                    if let Some(index) = remove_attachment {
+                        self.pending_attachments.remove(index);
+                    }
+
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .button(l.check_diagnostics_btn)
+                            .on_hover_text(l.check_diagnostics_hint)
+                            .clicked()
+                        {
+                            self.run_project_diagnostics();
+                        }
+                        if self.running_diagnostics {
+                            ui.spinner();
+                        }
+                        for (label, prompt) in [
+                            (
+                                "Пояснити проєкт",
+                                "Проаналізуй структуру проєкту та коротко поясни його архітектуру.",
+                            ),
+                            (
+                                "Знайти проблеми",
+                                "Перевір проєкт на очевидні помилки й запропонуй план їх виправлення.",
+                            ),
+                            (
+                                "Спланувати функцію",
+                                "Допоможи спланувати реалізацію нової функції: спочатку уточни вимоги, якщо потрібно.",
+                            ),
+                        ] {
+                            if ui.small_button(label).clicked() {
+                                self.draft = prompt.to_owned();
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("📎")
+                            .on_hover_text(l.attach_btn)
+                            .clicked()
+                        {
+                            self.add_attachments();
+                        }
+                        let text_edit = egui::TextEdit::multiline(&mut self.draft)
+                            .desired_rows(2)
+                            .hint_text(l.chat_placeholder);
+                        let send_btn_width = 85.0;
+                        let input_width = (ui.available_width() - send_btn_width - 8.0).max(120.0);
+                        let input = ui.add_sized([input_width, 42.0], text_edit);
+                        let enter_pressed = input.has_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                            && !ui.input(|input| input.modifiers.shift);
+                        if enter_pressed {
+                            self.send_message();
+                        }
+                        if ui
+                            .add_enabled(!self.busy, egui::Button::new(l.send_btn).min_size(egui::vec2(send_btn_width, 42.0)))
+                            .clicked()
+                        {
+                            self.send_message();
+                        }
+                    });
+
+                    ui.weak(if self.state.lang == AppLang::En {
+                        "Enter to send · Shift+Enter for new line"
+                    } else {
+                        "Enter — надіслати · Shift+Enter — новий рядок"
+                    });
+                });
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             // ── Status bar ────────────────────────────────────────────────────
             if let Some(status) = self.status.clone() {
@@ -2351,6 +2485,83 @@ impl eframe::App for MnemosyneApp {
                             }
                         }
                     });
+
+                    // ── Compact chat toolbar (Model, Mode, Context) ───
+                    let mut settings_changed = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Модель:");
+                        egui::ComboBox::from_id_salt("claude-model-family")
+                            .selected_text(self.state.claude_model.label())
+                            .show_ui(ui, |ui| {
+                                settings_changed |= ui
+                                    .selectable_value(
+                                        &mut self.state.claude_model,
+                                        ClaudeModel::Sonnet,
+                                        "Sonnet",
+                                    )
+                                    .changed();
+                                settings_changed |= ui
+                                    .selectable_value(
+                                        &mut self.state.claude_model,
+                                        ClaudeModel::Opus,
+                                        "Opus",
+                                    )
+                                    .changed();
+                                settings_changed |= ui
+                                    .selectable_value(
+                                        &mut self.state.claude_model,
+                                        ClaudeModel::Haiku,
+                                        "Haiku",
+                                    )
+                                    .changed();
+                            });
+
+                        ui.separator();
+
+                        ui.label("Режим:");
+                        settings_changed |= ui
+                            .selectable_value(
+                                &mut self.state.agent_mode,
+                                AgentMode::Plan,
+                                "План",
+                            )
+                            .on_hover_text("План · читання: Claude читає проєкт і планує, без змін файлів.")
+                            .changed();
+                        settings_changed |= ui
+                            .selectable_value(
+                                &mut self.state.agent_mode,
+                                AgentMode::Turbo,
+                                "Turbo",
+                            )
+                            .on_hover_text("Turbo · підтвердження: Mnemosyne запитує підтвердження кожної зміни файлів.")
+                            .changed();
+
+                        ui.separator();
+
+                        ui.label("Контекст:");
+                        egui::ComboBox::from_id_salt("conversation-context-limit")
+                            .selected_text(self.state.context_limit.label())
+                            .show_ui(ui, |ui| {
+                                for limit in [
+                                    ConversationContextLimit::Last5Turns,
+                                    ConversationContextLimit::Last10Turns,
+                                    ConversationContextLimit::Last20Turns,
+                                    ConversationContextLimit::Last40Turns,
+                                    ConversationContextLimit::All,
+                                ] {
+                                    settings_changed |= ui
+                                        .selectable_value(
+                                            &mut self.state.context_limit,
+                                            limit,
+                                            limit.label(),
+                                        )
+                                        .changed();
+                                }
+                            });
+                    });
+                    if settings_changed {
+                        self.save();
+                    }
                     ui.separator();
 
                     egui::ScrollArea::vertical()
@@ -2401,192 +2612,6 @@ impl eframe::App for MnemosyneApp {
                                 });
                             }
                         });
-
-                    ui.separator();
-                    let mut mode_changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("Режим агента:");
-                        mode_changed |= ui
-                            .selectable_value(
-                                &mut self.state.agent_mode,
-                                AgentMode::Plan,
-                                "План · читання",
-                            )
-                            .changed();
-                        mode_changed |= ui
-                            .selectable_value(
-                                &mut self.state.agent_mode,
-                                AgentMode::Turbo,
-                                "Turbo · підтвердження змін",
-                            )
-                            .on_hover_text(
-                                "Показує попередній перегляд і запитує підтвердження кожної зміни; shell-команди вимкнені.",
-                            )
-                            .changed();
-                    });
-                    if mode_changed {
-                        self.save();
-                    }
-                    ui.weak(match self.state.agent_mode {
-                        AgentMode::Plan => "Claude може читати проєкт і складати план, але не змінювати файли.",
-                        AgentMode::Turbo => "Перед кожною зміною файла Mnemosyne покаже попередній перегляд і запитає дозвіл. Shell-команди вимкнені.",
-                    });
-                    let mut model_changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("Модель:");
-                        egui::ComboBox::from_id_salt("claude-model-family")
-                            .selected_text(self.state.claude_model.label())
-                            .show_ui(ui, |ui| {
-                                model_changed |= ui
-                                    .selectable_value(
-                                        &mut self.state.claude_model,
-                                        ClaudeModel::Sonnet,
-                                        "Sonnet",
-                                    )
-                                    .changed();
-                                model_changed |= ui
-                                    .selectable_value(
-                                        &mut self.state.claude_model,
-                                        ClaudeModel::Opus,
-                                        "Opus",
-                                    )
-                                    .changed();
-                                model_changed |= ui
-                                    .selectable_value(
-                                        &mut self.state.claude_model,
-                                        ClaudeModel::Haiku,
-                                        "Haiku",
-                                    )
-                                    .changed();
-                            });
-                    });
-                    if model_changed {
-                        self.save();
-                    }
-                    ui.weak("Вибрана сім’я передається Claude Code; її маршрут налаштовується у FreeLLMAPI → Keys → Anthropic.");
-
-                    let mut context_limit_changed = false;
-                    ui.horizontal(|ui| {
-                        ui.label("Контекст чату:");
-                        egui::ComboBox::from_id_salt("conversation-context-limit")
-                            .selected_text(self.state.context_limit.label())
-                            .show_ui(ui, |ui| {
-                                for limit in [
-                                    ConversationContextLimit::Last5Turns,
-                                    ConversationContextLimit::Last10Turns,
-                                    ConversationContextLimit::Last20Turns,
-                                    ConversationContextLimit::Last40Turns,
-                                    ConversationContextLimit::All,
-                                ] {
-                                    context_limit_changed |= ui
-                                        .selectable_value(
-                                            &mut self.state.context_limit,
-                                            limit,
-                                            limit.label(),
-                                        )
-                                        .changed();
-                                }
-                            });
-                    });
-                    if context_limit_changed {
-                        self.save();
-                    }
-                    ui.weak("Старі повідомлення залишаються в історії, але не передаються моделі, якщо вибрано ліміт.");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button(l.check_diagnostics_btn).on_hover_text(l.check_diagnostics_hint).clicked() {
-                            self.run_project_diagnostics();
-                        }
-                        if self.running_diagnostics {
-                            ui.spinner();
-                        }
-                        for (label, prompt) in [
-                            (
-                                "Пояснити проєкт",
-                                "Проаналізуй структуру проєкту та коротко поясни його архітектуру.",
-                            ),
-                            (
-                                "Знайти проблеми",
-                                "Перевір проєкт на очевидні помилки й запропонуй план їх виправлення.",
-                            ),
-                            (
-                                "Спланувати функцію",
-                                "Допоможи спланувати реалізацію нової функції: спочатку уточни вимоги, якщо потрібно.",
-                            ),
-                        ] {
-                            if ui.small_button(label).clicked() {
-                                self.draft = prompt.to_owned();
-                            }
-                        }
-                    });
-                    let mut dismiss_diagnostics = false;
-                    if let Some(diag) = &self.diagnostics_result {
-                        let col = if diag.starts_with('✓') {
-                            egui::Color32::LIGHT_GREEN
-                        } else if diag.starts_with('✗') {
-                            egui::Color32::LIGHT_RED
-                        } else {
-                            egui::Color32::LIGHT_BLUE
-                        };
-                        ui.horizontal(|ui| {
-                            ui.colored_label(col, diag);
-                            if ui.small_button("✕").clicked() {
-                                dismiss_diagnostics = true;
-                            }
-                        });
-                    }
-                    if dismiss_diagnostics {
-                        self.diagnostics_result = None;
-                    }
-                    let mut remove_attachment = None;
-                    ui.horizontal_wrapped(|ui| {
-                        for (index, path) in self.pending_attachments.iter().enumerate() {
-                            let name = path
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("файл")
-                                .to_owned();
-                            ui.horizontal(|ui| {
-                                ui.label(format!("📎 {name}"));
-                                if ui.small_button("×").clicked() {
-                                    remove_attachment = Some(index);
-                                }
-                            });
-                        }
-                    });
-                    if let Some(index) = remove_attachment {
-                        self.pending_attachments.remove(index);
-                    }
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button("📎")
-                            .on_hover_text(l.attach_btn)
-                            .clicked()
-                        {
-                            self.add_attachments();
-                        }
-                        let input = ui.add(
-                            egui::TextEdit::multiline(&mut self.draft)
-                                .desired_rows(3)
-                                .hint_text(l.chat_placeholder),
-                        );
-                        let enter_pressed = input.has_focus()
-                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                            && !ui.input(|input| input.modifiers.shift);
-                        if enter_pressed {
-                            self.send_message();
-                        }
-                        if ui
-                            .add_enabled(!self.busy, egui::Button::new(l.send_btn))
-                            .clicked()
-                        {
-                            self.send_message();
-                        }
-                    });
-                    ui.weak(if self.state.lang == AppLang::En {
-                        "Enter to send · Shift+Enter for new line"
-                    } else {
-                        "Enter — надіслати · Shift+Enter — новий рядок"
-                    });
                 }
                 None => {
                     ui.vertical_centered(|ui| {
@@ -5945,8 +5970,8 @@ fn main() -> eframe::Result<()> {
     let _ = initial_dark_theme;
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1100.0, 760.0])
-        .with_min_inner_size([720.0, 480.0]);
+        .with_inner_size([980.0, 620.0])
+        .with_min_inner_size([640.0, 400.0]);
     if let Some(icon) = load_app_icon() {
         viewport = viewport.with_icon(icon);
     }
