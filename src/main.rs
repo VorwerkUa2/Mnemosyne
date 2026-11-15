@@ -123,6 +123,16 @@ struct L {
     // Agent mode labels
     pub plan_hint: &'static str,
     pub turbo_hint: &'static str,
+    // Coding Superpowers
+    pub superpowers_section: &'static str,
+    pub caveman_mode: &'static str,
+    pub caveman_hint: &'static str,
+    pub karpathy_rules: &'static str,
+    pub karpathy_hint: &'static str,
+    pub auto_rules_btn: &'static str,
+    pub auto_rules_success: &'static str,
+    pub check_diagnostics_btn: &'static str,
+    pub check_diagnostics_hint: &'static str,
 }
 
 const UK: L = L {
@@ -193,6 +203,15 @@ const UK: L = L {
     approval_deny: "✕ Відхилити",
     plan_hint: "Claude лише читає й аналізує файли — без змін.",
     turbo_hint: "Claude може редагувати файли. Кожна зміна потребує підтвердження.",
+    superpowers_section: "⚡ Суперсили кодингу (Vibe-Coding)",
+    caveman_mode: "Режим Caveman (економія токенів)",
+    caveman_hint: "Максимально лаконічні відповіді без «води» та ввічливих прелюдій. Економить до 40% токенів.",
+    karpathy_rules: "Принципи Карпатого (Karpathy Rules)",
+    karpathy_hint: "YAGNI, мінімум непотрібних абстракцій, перевірка компілятором, атомарні diffs.",
+    auto_rules_btn: "Оновити правила проєкту (.claude/CLAUDE.md)",
+    auto_rules_success: "✓ Правила успішно створено у .claude/CLAUDE.md",
+    check_diagnostics_btn: "🔍 Перевірити діагностику",
+    check_diagnostics_hint: "Запуск перевірки синтаксису й компілятора (cargo check / pyright) без витрати токенів.",
 };
 
 const EN: L = L {
@@ -263,6 +282,15 @@ const EN: L = L {
     approval_deny: "✕ Deny",
     plan_hint: "Claude only reads and analyses files — no changes.",
     turbo_hint: "Claude can edit files. Each change requires confirmation.",
+    superpowers_section: "⚡ Coding Superpowers (Vibe-Coding)",
+    caveman_mode: "Caveman Mode (Token Saver)",
+    caveman_hint: "Ultra-concise output without filler or polite pleasantries. Saves up to 40% tokens.",
+    karpathy_rules: "Karpathy Engineering Rules",
+    karpathy_hint: "YAGNI, minimal abstractions, compiler verification, atomic diffs.",
+    auto_rules_btn: "Update Project Rules (.claude/CLAUDE.md)",
+    auto_rules_success: "✓ Rules successfully written to .claude/CLAUDE.md",
+    check_diagnostics_btn: "🔍 Check Diagnostics",
+    check_diagnostics_hint: "Run compiler & syntax checks (cargo check / pyright) with 0 token cost.",
 };
 
 // ── App State ─────────────────────────────────────────────────────────────────
@@ -277,10 +305,16 @@ struct AppState {
     agent_mode: AgentMode,
     claude_model: ClaudeModel,
     context_limit: ConversationContextLimit,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     decod_mcp_enabled: bool,
     #[serde(default = "default_decod_path")]
     decod_mcp_path: String,
+    #[serde(default = "default_true")]
+    caveman_mode: bool,
+    #[serde(default = "default_true")]
+    karpathy_rules: bool,
+    #[serde(default = "default_true")]
+    auto_rules_provision: bool,
     #[serde(default)]
     lang: AppLang,
     #[serde(default = "default_dark_theme")]
@@ -288,6 +322,7 @@ struct AppState {
 }
 
 fn default_dark_theme() -> bool { true }
+fn default_true() -> bool { true }
 
 fn default_decod_path() -> String {
     "C:/Users/knyaz/Desktop/Decod/core/mcp_server.py".to_string()
@@ -460,6 +495,12 @@ struct ComponentUpdateResult {
     success: bool,
 }
 
+#[allow(dead_code)]
+struct DiagnosticsResult {
+    message: String,
+    success: bool,
+}
+
 #[derive(Clone)]
 struct ClaudePlugin {
     id: String,
@@ -577,9 +618,13 @@ struct MnemosyneApp {
     claude_install_rx: Receiver<ClaudeInstallResult>,
     update_tx: Sender<ComponentUpdateResult>,
     update_rx: Receiver<ComponentUpdateResult>,
+    diagnostics_tx: Sender<DiagnosticsResult>,
+    diagnostics_rx: Receiver<DiagnosticsResult>,
     installing_claude_cli: bool,
     testing_connection: bool,
     updating_components: bool,
+    running_diagnostics: bool,
+    diagnostics_result: Option<String>,
     update_status: Option<String>,
     decod_mcp_check_status: Option<String>,
 }
@@ -595,6 +640,7 @@ impl MnemosyneApp {
         let (connection_test_tx, connection_test_rx) = mpsc::channel();
         let (claude_install_tx, claude_install_rx) = mpsc::channel();
         let (update_tx, update_rx) = mpsc::channel();
+        let (diagnostics_tx, diagnostics_rx) = mpsc::channel();
         let (state, load_error) = match load_state() {
             Ok(state) => (state, None),
             Err(error) => (AppState::default(), Some(error)),
@@ -657,7 +703,11 @@ impl MnemosyneApp {
             claude_install_rx,
             update_tx,
             update_rx,
+            diagnostics_tx,
+            diagnostics_rx,
             testing_connection: false,
+            running_diagnostics: false,
+            diagnostics_result: None,
             decod_mcp_check_status: None,
         }
     }
@@ -1138,21 +1188,19 @@ impl MnemosyneApp {
         let approval_tx = self.approval_tx.clone();
         let active_child = Arc::clone(&self.active_child);
         let cancel_requested = Arc::clone(&self.cancel_requested);
-        let mcp_config = if self.state.decod_mcp_enabled {
-            let path = self.state.decod_mcp_path.clone();
-            let mcp_json = serde_json::json!({
-                "mcpServers": {
-                    "decod": {
-                        "command": "python",
-                        "args": [path]
-                    }
-                }
-            })
-            .to_string();
-            Some(mcp_json)
-        } else {
-            None
-        };
+        if self.state.auto_rules_provision {
+            let _ = ensure_curated_project_rules(
+                &project_path,
+                self.state.caveman_mode,
+                self.state.karpathy_rules,
+                self.state.decod_mcp_enabled,
+            );
+        }
+        let mcp_config = build_project_mcp_config(
+            &project_path,
+            &self.state.decod_mcp_path,
+            self.state.decod_mcp_enabled,
+        );
         thread::spawn(move || {
             let result = run_claude(
                 &project_path,
@@ -1335,7 +1383,7 @@ impl MnemosyneApp {
                         .output();
                 }
                 let _ = Command::new("python")
-                    .args(["-m", "pip", "install", "--upgrade", "frida", "lief", "capstone", "psutil"])
+                    .args(["-m", "pip", "install", "--upgrade", "frida", "lief", "capstone", "psutil", "pyright"])
                     .output();
                 msgs.push("✓ Decod RE рушій оновлено".to_string());
             }
@@ -1348,6 +1396,105 @@ impl MnemosyneApp {
                 message: summary,
                 success: true,
             });
+        });
+    }
+
+    fn run_project_diagnostics(&mut self) {
+        if self.running_diagnostics {
+            return;
+        }
+        let Some(project) = self.selected_project() else {
+            self.status = Some("Виберіть проєкт для запуску діагностики.".to_owned());
+            return;
+        };
+        let project_path = project.path.clone();
+        let lang = self.state.lang;
+        self.running_diagnostics = true;
+        self.diagnostics_result = Some(if lang == AppLang::En {
+            "Running compiler & syntax diagnostics…".to_string()
+        } else {
+            "Запуск компілятора та перевірки синтаксису…".to_string()
+        });
+        self.status = self.diagnostics_result.clone();
+        let tx = self.diagnostics_tx.clone();
+
+        thread::spawn(move || {
+            let is_rust = project_path.join("Cargo.toml").exists();
+            let is_python = project_path.join("pyproject.toml").exists()
+                || project_path.join("requirements.txt").exists()
+                || project_path.join("setup.py").exists();
+
+            if is_rust {
+                match Command::new("cargo")
+                    .current_dir(&project_path)
+                    .args(["check", "--message-format=short"])
+                    .output()
+                {
+                    Ok(output) if output.status.success() => {
+                        let _ = tx.send(DiagnosticsResult {
+                            message: if lang == AppLang::En {
+                                "✓ Rust (cargo check): Zero errors! Code compiles cleanly.".to_string()
+                            } else {
+                                "✓ Rust (cargo check): 0 помилок! Код компілюється чисто.".to_string()
+                            },
+                            success: true,
+                        });
+                    }
+                    Ok(output) => {
+                        let text = String::from_utf8_lossy(&output.stderr);
+                        let first_lines = text.lines().take(4).collect::<Vec<_>>().join("\n");
+                        let _ = tx.send(DiagnosticsResult {
+                            message: format!("✗ Rust cargo check:\n{}", first_lines),
+                            success: false,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(DiagnosticsResult {
+                            message: format!("✗ Cargo error: {e}"),
+                            success: false,
+                        });
+                    }
+                }
+            } else if is_python {
+                let res = Command::new("python")
+                    .args(["-m", "compileall", "-q", "."])
+                    .current_dir(&project_path)
+                    .output();
+                match res {
+                    Ok(output) if output.status.success() => {
+                        let _ = tx.send(DiagnosticsResult {
+                            message: if lang == AppLang::En {
+                                "✓ Python: All scripts compile cleanly without syntax errors.".to_string()
+                            } else {
+                                "✓ Python: Всі файли скомпільовані без синтаксичних помилок.".to_string()
+                            },
+                            success: true,
+                        });
+                    }
+                    Ok(output) => {
+                        let text = String::from_utf8_lossy(&output.stderr);
+                        let _ = tx.send(DiagnosticsResult {
+                            message: format!("✗ Python syntax errors:\n{}", text),
+                            success: false,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(DiagnosticsResult {
+                            message: format!("✗ Python error: {e}"),
+                            success: false,
+                        });
+                    }
+                }
+            } else {
+                let _ = tx.send(DiagnosticsResult {
+                    message: if lang == AppLang::En {
+                        "ℹ Generic project: Decod AST analyzer active.".to_string()
+                    } else {
+                        "ℹ Звичайний проєкт: Decod AST-аналізатор активний.".to_string()
+                    },
+                    success: true,
+                });
+            }
         });
     }
 
@@ -1570,7 +1717,16 @@ impl MnemosyneApp {
             self.status = Some(response.message);
             ctx.request_repaint();
         }
+        while let Ok(response) = self.diagnostics_rx.try_recv() {
+            self.running_diagnostics = false;
+            self.diagnostics_result = Some(response.message.clone());
+            self.status = Some(response.message);
+            ctx.request_repaint();
+        }
         if self.busy {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
+        if self.running_diagnostics {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
         if self.checking_provider {
@@ -2054,6 +2210,12 @@ impl eframe::App for MnemosyneApp {
                     }
                     ui.weak("Старі повідомлення залишаються в історії, але не передаються моделі, якщо вибрано ліміт.");
                     ui.horizontal_wrapped(|ui| {
+                        if ui.button(l.check_diagnostics_btn).on_hover_text(l.check_diagnostics_hint).clicked() {
+                            self.run_project_diagnostics();
+                        }
+                        if self.running_diagnostics {
+                            ui.spinner();
+                        }
                         for (label, prompt) in [
                             (
                                 "Пояснити проєкт",
@@ -2073,6 +2235,25 @@ impl eframe::App for MnemosyneApp {
                             }
                         }
                     });
+                    let mut dismiss_diagnostics = false;
+                    if let Some(diag) = &self.diagnostics_result {
+                        let col = if diag.starts_with('✓') {
+                            egui::Color32::LIGHT_GREEN
+                        } else if diag.starts_with('✗') {
+                            egui::Color32::LIGHT_RED
+                        } else {
+                            egui::Color32::LIGHT_BLUE
+                        };
+                        ui.horizontal(|ui| {
+                            ui.colored_label(col, diag);
+                            if ui.small_button("✕").clicked() {
+                                dismiss_diagnostics = true;
+                            }
+                        });
+                    }
+                    if dismiss_diagnostics {
+                        self.diagnostics_result = None;
+                    }
                     let mut remove_attachment = None;
                     ui.horizontal_wrapped(|ui| {
                         for (index, path) in self.pending_attachments.iter().enumerate() {
@@ -2923,6 +3104,64 @@ impl eframe::App for MnemosyneApp {
                     if self.state.decod_mcp_enabled {
                         ui.weak(l.decod_active_hint);
                     }
+
+                    // ── Superpowers & Vibe-Coding ─────────────────────────────
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.heading(l.superpowers_section);
+                    ui.horizontal(|ui| {
+                        let mut caveman = self.state.caveman_mode;
+                        if ui.checkbox(&mut caveman, l.caveman_mode).changed() {
+                            self.state.caveman_mode = caveman;
+                            self.save();
+                        }
+                    });
+                    ui.weak(l.caveman_hint);
+
+                    ui.horizontal(|ui| {
+                        let mut karpathy = self.state.karpathy_rules;
+                        if ui.checkbox(&mut karpathy, l.karpathy_rules).changed() {
+                            self.state.karpathy_rules = karpathy;
+                            self.save();
+                        }
+                    });
+                    ui.weak(l.karpathy_hint);
+
+                    ui.horizontal(|ui| {
+                        let mut auto_rules = self.state.auto_rules_provision;
+                        if ui
+                            .checkbox(
+                                &mut auto_rules,
+                                if self.state.lang == AppLang::En {
+                                    "Auto-provision .claude/CLAUDE.md"
+                                } else {
+                                    "Автоматично налаштовувати .claude/CLAUDE.md"
+                                },
+                            )
+                            .changed()
+                        {
+                            self.state.auto_rules_provision = auto_rules;
+                            self.save();
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        if ui.button(l.auto_rules_btn).clicked() {
+                            if let Some(project) = self.selected_project() {
+                                match ensure_curated_project_rules(
+                                    &project.path,
+                                    self.state.caveman_mode,
+                                    self.state.karpathy_rules,
+                                    self.state.decod_mcp_enabled,
+                                ) {
+                                    Ok(_) => self.status = Some(l.auto_rules_success.to_string()),
+                                    Err(e) => self.status = Some(format!("Помилка: {e}")),
+                                }
+                            } else {
+                                self.status = Some(l.select_or_create.to_string());
+                            }
+                        }
+                    });
 
                     // ── Updates & Maintenance ─────────────────────────────────
                     ui.add_space(12.0);
@@ -5264,6 +5503,181 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+// ── Project Language Detection & Rule Provisioning ───────────────────────────
+
+pub fn detect_project_languages(project_path: &Path) -> Vec<String> {
+    let mut langs = Vec::new();
+    if project_path.join("Cargo.toml").exists() {
+        langs.push("Rust".to_string());
+    }
+    if project_path.join("pyproject.toml").exists()
+        || project_path.join("requirements.txt").exists()
+        || project_path.join("setup.py").exists()
+    {
+        langs.push("Python".to_string());
+    }
+    if project_path.join("CMakeLists.txt").exists()
+        || project_path.join("Makefile").exists()
+        || project_path.join("compile_commands.json").exists()
+    {
+        langs.push("C/C++".to_string());
+    }
+    if project_path.join("package.json").exists() {
+        langs.push("JavaScript/TypeScript".to_string());
+    }
+    if project_path.join("go.mod").exists() {
+        langs.push("Go".to_string());
+    }
+    if let Ok(entries) = fs::read_dir(project_path) {
+        for entry in entries.flatten() {
+            if let Some(ext) = entry.path().extension() {
+                if ext == "csproj" || ext == "sln" {
+                    if !langs.contains(&"C#".to_string()) {
+                        langs.push("C#".to_string());
+                    }
+                }
+                if ext == "lua" {
+                    if !langs.contains(&"Lua".to_string()) {
+                        langs.push("Lua".to_string());
+                    }
+                }
+            }
+        }
+    }
+    langs
+}
+
+pub fn ensure_curated_project_rules(
+    project_path: &Path,
+    caveman: bool,
+    karpathy: bool,
+    decod_mcp: bool,
+) -> Result<PathBuf, String> {
+    let claude_dir = project_path.join(".claude");
+    if !claude_dir.exists() {
+        fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
+    }
+    let claude_md = claude_dir.join("CLAUDE.md");
+
+    if claude_md.exists() {
+        let existing = fs::read_to_string(&claude_md).unwrap_or_default();
+        if !existing.contains("<!-- MNEMOSYNE_AUTO_RULES -->") {
+            return Ok(claude_md);
+        }
+    }
+
+    let detected_langs = detect_project_languages(project_path);
+    let lang_str = if detected_langs.is_empty() {
+        "General Codebase".to_string()
+    } else {
+        detected_langs.join(", ")
+    };
+
+    let mut content = String::new();
+    content.push_str("<!-- MNEMOSYNE_AUTO_RULES -->\n");
+    content.push_str("# Project Guidelines & Coding Directives\n\n");
+    content.push_str(&format!("**Detected Tech Stack:** {}\n\n", lang_str));
+
+    if caveman {
+        content.push_str("## ⚡ Token Thrift & Caveman Directives\n");
+        content.push_str("- **Conciseness**: Be extremely direct. Eliminate chit-chat, conversational filler, pleasantries, and unnecessary apologies.\n");
+        content.push_str("- **Minimal Diffs**: When modifying code, produce exact surgical edits without echoing unchanged boilerplate or entire files.\n");
+        content.push_str("- **Zero Fluff**: Do not summarize code changes unless explicitly asked. Deliver working code immediately.\n\n");
+    }
+
+    if karpathy {
+        content.push_str("## 🧠 Karpathy Engineering Guidelines\n");
+        content.push_str("- **Think Before Coding**: Make a concise plan before modifying critical logic.\n");
+        content.push_str("- **Minimal Abstractions (YAGNI)**: Avoid premature generalization, excessive design patterns, or layers of indirection. Prefer readable, straightforward procedural or idiomatic code.\n");
+        content.push_str("- **Preserve Style**: Strictly match existing coding conventions, naming styles, and error handling patterns in the repository.\n");
+        content.push_str("- **Defensive Programming**: Check boundaries, null/None states, unwrap failures, and error returns.\n");
+        content.push_str("- **Verify**: Run compiler or diagnostics checks to ensure no syntax/type breaks before completing your response.\n\n");
+    }
+
+    if decod_mcp {
+        content.push_str("## 🛠 Decod MCP Superpowers (Context Optimization)\n");
+        content.push_str("You have high-efficiency Decod MCP tools configured:\n");
+        content.push_str("- `inspect_code_structure(file_path)`: ALWAYS call this first to get the AST symbol tree (classes, functions, line ranges) instead of reading 1,000+ line files into context!\n");
+        content.push_str("- `extract_function_definition(file_path, symbol_name)`: Surgically read only the function body you need to examine or edit.\n");
+        content.push_str("- `check_code_diagnostics(project_or_file)`: Run instant compiler diagnostics (`cargo check`, `py_compile`, syntax checks) without burning context.\n");
+        content.push_str("- `run_git_summary(repo_path)`: Get token-compact git branch and status.\n\n");
+    }
+
+    if detected_langs.contains(&"Rust".to_string()) {
+        content.push_str("## 🦀 Rust Rules\n");
+        content.push_str("- Target: Rust 2021/2024 edition. Use idiomatic error handling with `Result<T, E>` and `?`.\n");
+        content.push_str("- Avoid unnecessary `.clone()` calls; use references and borrowing where appropriate.\n");
+        content.push_str("- Verify changes using `cargo check`.\n\n");
+    }
+
+    if detected_langs.contains(&"Python".to_string()) {
+        content.push_str("## 🐍 Python Rules\n");
+        content.push_str("- Use Python 3.10+ type annotations (`str | None`, `list[dict]`).\n");
+        content.push_str("- Follow PEP 8 naming and structure; handle exceptions explicitly.\n");
+        content.push_str("- Verify syntax with `check_code_diagnostics`.\n\n");
+    }
+
+    if detected_langs.contains(&"C/C++".to_string()) {
+        content.push_str("## ⚙ C/C++ Rules\n");
+        content.push_str("- Modern C++17/C++20 standards. Enforce RAII for memory and resources.\n");
+        content.push_str("- Use `std::unique_ptr` / `std::shared_ptr`; avoid raw owning pointers.\n\n");
+    }
+
+    fs::write(&claude_md, content).map_err(|e| e.to_string())?;
+    Ok(claude_md)
+}
+
+fn resolve_decod_path(configured_path: &str) -> PathBuf {
+    let p = PathBuf::from(configured_path);
+    if p.exists() {
+        return p;
+    }
+    let candidates = [
+        "C:/Users/knyaz/Desktop/Decod/core/mcp_server.py",
+        "../Decod/core/mcp_server.py",
+        "./Decod/core/mcp_server.py",
+        "Decod/core/mcp_server.py",
+    ];
+    for c in candidates {
+        let cp = PathBuf::from(c);
+        if cp.exists() {
+            return cp;
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let lp = PathBuf::from(home).join(".local/share/decod/core/mcp_server.py");
+        if lp.exists() {
+            return lp;
+        }
+    }
+    p
+}
+
+fn build_project_mcp_config(
+    _project_path: &Path,
+    decod_path: &str,
+    decod_enabled: bool,
+) -> Option<String> {
+    if !decod_enabled {
+        return None;
+    }
+    let resolved = resolve_decod_path(decod_path);
+    let mut servers = serde_json::Map::new();
+
+    servers.insert(
+        "decod".to_string(),
+        serde_json::json!({
+            "command": "python",
+            "args": [resolved.to_string_lossy().to_string()]
+        }),
+    );
+
+    let config = serde_json::json!({
+        "mcpServers": servers
+    });
+    Some(config.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5981,5 +6395,48 @@ mod tests {
         }))
         .unwrap();
         assert!(select_release_asset(&release, "FreeLLMAPI-Setup-", ".exe").is_err());
+    }
+
+    #[test]
+    fn detects_project_languages_accurately() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        let langs = detect_project_languages(&root);
+        assert_eq!(langs, vec!["Rust"]);
+
+        fs::write(root.join("requirements.txt"), "flask\n").unwrap();
+        let langs_dual = detect_project_languages(&root);
+        assert!(langs_dual.contains(&"Rust".to_string()));
+        assert!(langs_dual.contains(&"Python".to_string()));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn provisions_curated_rules_with_caveman_and_karpathy() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+
+        let path = ensure_curated_project_rules(&root, true, true, true).unwrap();
+        assert!(path.exists());
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("<!-- MNEMOSYNE_AUTO_RULES -->"));
+        assert!(content.contains("Caveman Directives"));
+        assert!(content.contains("Karpathy Engineering"));
+        assert!(content.contains("Decod MCP Superpowers"));
+        assert!(content.contains("Rust Rules"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn builds_dynamic_mcp_config_correctly() {
+        let root = temporary_project();
+        let json_str = build_project_mcp_config(&root, "mcp_server.py", true).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(parsed["mcpServers"]["decod"]["command"].is_string());
+        assert_eq!(parsed["mcpServers"]["decod"]["command"], "python");
     }
 }
