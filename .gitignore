@@ -4,3 +4,5 @@
 *.tmp
 *.exe
 /Test
+
+scratch_*.py

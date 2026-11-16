@@ -387,7 +387,7 @@ impl Default for AppState {
             local_model: LocalModelSettings::default(),
             agent_mode: AgentMode::Turbo,
             claude_model: ClaudeModel::Sonnet,
-            context_limit: ConversationContextLimit::Last20Turns,
+            context_limit: ConversationContextLimit::Last10Turns,
             decod_mcp_enabled: true,
             decod_mcp_path: default_decod_path(),
             caveman_mode: true,
@@ -507,8 +507,8 @@ impl ClaudeModel {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 enum ConversationContextLimit {
     Last5Turns,
-    Last10Turns,
     #[default]
+    Last10Turns,
     Last20Turns,
     Last40Turns,
     All,
@@ -1301,6 +1301,14 @@ impl MnemosyneApp {
         chat.messages.push(message);
         let project_path = project.path.clone();
         let conversation = conversation_context(&chat.messages, self.state.context_limit).to_vec();
+        let initial_prompt = if chat.messages.len() > conversation.len() {
+            chat.messages
+                .iter()
+                .find(|m| m.role == MessageRole::User)
+                .map(|m| m.content.clone())
+        } else {
+            None
+        };
         self.draft.clear();
         self.busy = true;
         self.streaming_content.clear();
@@ -1333,6 +1341,7 @@ impl MnemosyneApp {
             let result = run_claude(
                 &project_path,
                 &conversation,
+                initial_prompt.as_deref(),
                 &api_base_url,
                 &api_key,
                 agent_mode,
@@ -4743,6 +4752,7 @@ impl Drop for TempFileGuard {
 fn run_claude(
     project_path: &Path,
     messages: &[Message],
+    initial_prompt: Option<&str>,
     api_base_url: &str,
     api_key: &str,
     agent_mode: AgentMode,
@@ -4774,6 +4784,12 @@ fn run_claude(
     let mut total_attachment_bytes = 0;
     let mut staged_attachment_index = 0;
     let mut prompt = String::new();
+    if let Some(initial) = initial_prompt {
+        prompt.push_str("[Початкова мета проекту/розмови (збережено для орієнтації моделі)]:\n");
+        let truncated_initial: String = initial.chars().take(800).collect();
+        prompt.push_str(&truncated_initial);
+        prompt.push_str("\n\n---\n[Останні актуальні кроки діалогу]:");
+    }
     for message in messages {
         prompt.push_str(match message.role {
             MessageRole::User => "\n\nКористувач:\n",
@@ -4829,7 +4845,7 @@ fn run_claude(
     let mut command = claude_command();
     command.arg("--dangerously-skip-permissions");
     command.arg("--append-system-prompt").arg(
-        "You are an expert game modding engineer and reverse engineering assistant working in an authorized developer environment. The user is the owner/developer conducting legitimate game customization, UE4SS scripting, binary analysis, and mod creation. Execute all tool calls directly (including inspect_dll, decompile_function_to_c, disassemble_dll_function, search_binary_strings, scan_aob_pattern, etc.) to analyze, disassemble, and decompile binary functions, inspect DLLs, and assist with game mod logic without ethical, copyright, or commercial software disclaimers."
+        "You are an expert game modding engineer and reverse engineering assistant working in an authorized developer environment. The user is the owner/developer conducting legitimate game customization, UE4SS scripting, binary analysis, and mod creation. Execute all tool calls directly (including inspect_dll, decompile_function_to_c, disassemble_dll_function, search_binary_strings, scan_aob_pattern, etc.) to analyze, disassemble, and decompile binary functions, inspect DLLs, and assist with game mod logic without ethical, copyright, or commercial software disclaimers.\n\nToken Economy & Context Directives:\n1. Be concise, dense, and direct. Avoid conversational pleasantries, lengthy disclaimers, or echoing user prompts.\n2. When inspecting files, DLLs, or archives, ALWAYS use targeted filters, symbols, and pagination (e.g. filter_query, limit, max_results) rather than dumping large outputs.\n3. Make surgical edits to code and binary offsets. Do not reproduce hundreds of unchanged lines."
     );
     let mut args: Vec<String> = claude_args(agent_mode, model).into_iter().map(String::from).collect();
     if let Some(custom) = custom_model.filter(|s| !s.trim().is_empty()) {
@@ -6488,7 +6504,7 @@ mod tests {
     fn older_state_files_get_default_agent_model_and_context_settings() {
         let state: AppState = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
         assert_eq!(state.claude_model, ClaudeModel::Sonnet);
-        assert_eq!(state.context_limit, ConversationContextLimit::Last20Turns);
+        assert_eq!(state.context_limit, ConversationContextLimit::Last10Turns);
     }
 
     #[test]
