@@ -31,6 +31,11 @@ const FREELLMAPI_RELEASES_API: &str =
 const MAX_ATTACHMENT_BYTES: u64 = 512 * 1024;
 const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_ATTACHMENT_CHARS: usize = 40_000;
+const MAX_INLINE_ATTACHMENT_CHARS: usize = 32_000;
+const MAX_CONVERSATION_CHARS: usize = 48_000;
+const MAX_MEMORY_SUMMARY_CHARS: usize = 8_000;
+const MAX_MEMORY_INPUT_CHARS: usize = 20_000;
+const MAX_MEMORY_MESSAGES_PER_UPDATE: usize = 8;
 const MAX_PROJECT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_PROJECT_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_PROJECT_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
@@ -114,6 +119,10 @@ struct L {
     pub decod_path: &'static str,
     pub decod_check: &'static str,
     pub decod_active_hint: &'static str,
+    pub designatio_section: &'static str,
+    pub designatio_enable: &'static str,
+    pub designatio_path: &'static str,
+    pub designatio_check: &'static str,
     pub model_section: &'static str,
     pub mode_section: &'static str,
     pub mode_plan: &'static str,
@@ -209,6 +218,10 @@ const UK: L = L {
     decod_path: "Шлях до mcp_server.py",
     decod_check: "Перевірити",
     decod_active_hint: "✓ Decod MCP передається Claude Code як --mcp-config",
+    designatio_section: "Designatio MCP (Дизайн)",
+    designatio_enable: "Увімкнути Designatio MCP",
+    designatio_path: "Шлях до папки Designatio",
+    designatio_check: "Перевірити",
     model_section: "Модель Claude",
     mode_section: "Режим агента",
     mode_plan: "📋 Планування (тільки читання)",
@@ -244,10 +257,10 @@ const UK: L = L {
     local_model_url: "URL сервера",
     local_model_name: "Назва моделі",
     local_model_name_hint: "напр. llama-3.2-3b-instruct або залиште порожнім",
-    local_model_check: "Знайти моделі",
+    local_model_check: "Перевірити API й знайти моделі",
     local_model_connected: "✓ Підключено",
     local_model_disconnected: "✗ Не підключено",
-    local_model_hint: "LM Studio: :1234  •  Ollama: :11434  •  OpenAI-сумісний API",
+    local_model_hint: "LM Studio: :1234  •  Ollama: :11434  •  потрібен Anthropic API /v1/messages",
     local_model_pick: "Вибрати модель:",
 };
 
@@ -298,6 +311,10 @@ const EN: L = L {
     decod_path: "Path to mcp_server.py",
     decod_check: "Verify",
     decod_active_hint: "✓ Decod MCP passed to Claude Code as --mcp-config",
+    designatio_section: "Designatio MCP (Design)",
+    designatio_enable: "Enable Designatio MCP",
+    designatio_path: "Designatio directory",
+    designatio_check: "Verify",
     model_section: "Claude Model",
     mode_section: "Agent mode",
     mode_plan: "📋 Plan (read-only)",
@@ -333,10 +350,10 @@ const EN: L = L {
     local_model_url: "Server URL",
     local_model_name: "Model name",
     local_model_name_hint: "e.g. llama-3.2-3b-instruct or leave empty",
-    local_model_check: "Discover models",
+    local_model_check: "Verify API & discover models",
     local_model_connected: "✓ Connected",
     local_model_disconnected: "✗ Not connected",
-    local_model_hint: "LM Studio: :1234  •  Ollama: :11434  •  OpenAI-compatible API",
+    local_model_hint: "LM Studio: :1234  •  Ollama: :11434  •  requires Anthropic API /v1/messages",
     local_model_pick: "Select model:",
 };
 
@@ -358,6 +375,10 @@ struct AppState {
     decod_mcp_enabled: bool,
     #[serde(default = "default_decod_path")]
     decod_mcp_path: String,
+    #[serde(default)]
+    designatio_mcp_enabled: bool,
+    #[serde(default = "default_designatio_path")]
+    designatio_mcp_path: String,
     #[serde(default = "default_true")]
     caveman_mode: bool,
     #[serde(default = "default_true")]
@@ -377,6 +398,10 @@ fn default_decod_path() -> String {
     "C:/Users/knyaz/Desktop/Decod/core/mcp_server.py".to_string()
 }
 
+fn default_designatio_path() -> String {
+    "C:/Users/knyaz/Desktop/Designatio".to_string()
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -390,6 +415,8 @@ impl Default for AppState {
             context_limit: ConversationContextLimit::Last10Turns,
             decod_mcp_enabled: true,
             decod_mcp_path: default_decod_path(),
+            designatio_mcp_enabled: true,
+            designatio_mcp_path: default_designatio_path(),
             caveman_mode: true,
             karpathy_rules: true,
             auto_rules_provision: true,
@@ -455,6 +482,10 @@ struct Chat {
     id: String,
     title: String,
     messages: Vec<Message>,
+    #[serde(default)]
+    memory_summary: String,
+    #[serde(default)]
+    memory_compacted_through: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -541,6 +572,8 @@ struct ClaudeResult {
     chat_id: String,
     result: Result<String, String>,
     cancelled: bool,
+    memory_update: Option<(String, usize)>,
+    memory_error: Option<String>,
 }
 
 struct ClaudeStreamChunk {
@@ -727,6 +760,7 @@ struct MnemosyneApp {
     diagnostics_result: Option<String>,
     update_status: Option<String>,
     decod_mcp_check_status: Option<String>,
+    designatio_mcp_check_status: Option<String>,
 }
 
 impl MnemosyneApp {
@@ -814,6 +848,7 @@ impl MnemosyneApp {
             running_diagnostics: false,
             diagnostics_result: None,
             decod_mcp_check_status: None,
+            designatio_mcp_check_status: None,
         }
     }
 
@@ -983,6 +1018,8 @@ impl MnemosyneApp {
             id: Uuid::new_v4().to_string(),
             title: format!("Чат {}", Local::now().format("%d.%m %H:%M")),
             messages: Vec::new(),
+            memory_summary: String::new(),
+            memory_compacted_through: 0,
         };
         self.state.selected_chat = Some(chat.id.clone());
         if let Some(project) = self
@@ -1217,49 +1254,75 @@ impl MnemosyneApp {
             self.show_settings = true;
             return;
         }
-        let (api_base_url, api_key, custom_model) = if self.state.local_model.enabled {
-            if !self.state.local_model.connected {
-                self.status = Some(if self.state.lang == AppLang::En {
-                    "Please verify local model connection in Settings first.".to_owned()
+        let (api_base_url, api_key, custom_model, allow_custom_model) =
+            if self.state.local_model.enabled {
+                if !self.state.local_model.connected {
+                    self.status = Some(if self.state.lang == AppLang::En {
+                        "Please verify local model connection in Settings first.".to_owned()
+                    } else {
+                        "Спочатку перевірте підключення до локальної моделі у Налаштуваннях."
+                            .to_owned()
+                    });
+                    self.show_settings = true;
+                    return;
+                }
+                let custom = if self.state.local_model.model_name.trim().is_empty() {
+                    self.state.local_model.ready_models.first().cloned()
                 } else {
-                    "Спочатку перевірте підключення до локальної моделі у Налаштуваннях.".to_owned()
-                });
-                self.show_settings = true;
-                return;
-            }
-            let custom = if self.state.local_model.model_name.trim().is_empty() {
-                None
+                    Some(self.state.local_model.model_name.trim().to_owned())
+                };
+                (
+                    self.state.local_model.base_url.clone(),
+                    "local-model-token".to_owned(),
+                    custom,
+                    true,
+                )
             } else {
-                Some(self.state.local_model.model_name.trim().to_owned())
-            };
-            (
-                self.state.local_model.base_url.clone(),
-                "local-model-token".to_owned(),
-                custom,
-            )
-        } else {
-            let key = match load_freellmapi_key() {
-                Ok(Some(key)) => key,
-                Ok(None) => {
-                    self.status = Some("Підключіть FreeLLMAPI у Налаштуваннях.".to_owned());
+                let key = match load_freellmapi_key() {
+                    Ok(Some(key)) => key,
+                    Ok(None) => {
+                        self.status = Some("Підключіть FreeLLMAPI у Налаштуваннях.".to_owned());
+                        self.show_settings = true;
+                        return;
+                    }
+                    Err(error) => {
+                        self.status = Some(error);
+                        self.show_settings = true;
+                        return;
+                    }
+                };
+                if !self.state.freellmapi.connected {
+                    self.status = Some(
+                        "Спочатку перевірте підключення до FreeLLMAPI у Налаштуваннях.".to_owned(),
+                    );
                     self.show_settings = true;
                     return;
                 }
-                Err(error) => {
-                    self.status = Some(error);
+                let selected = self.state.freellmapi.selected_model.clone();
+                let allow_catalog_model = selected.as_deref().map_or(false, |model| {
+                    !is_claude_cli_model(model)
+                        && is_available_catalog_model(
+                            model,
+                            &self.state.freellmapi.ready_models,
+                        )
+                });
+                if selected.as_deref().map_or(false, |model| {
+                    !is_claude_cli_model(model) && !allow_catalog_model
+                }) {
+                    self.status = Some(
+                        "Обрана модель відсутня в актуальному каталозі FreeLLMAPI. Оновіть список моделей у Налаштуваннях."
+                            .to_owned(),
+                    );
                     self.show_settings = true;
                     return;
                 }
+                (
+                    self.state.freellmapi.base_url.clone(),
+                    key,
+                    selected,
+                    allow_catalog_model,
+                )
             };
-            if !self.state.freellmapi.connected {
-                self.status =
-                    Some("Спочатку перевірте підключення до FreeLLMAPI у Налаштуваннях.".to_owned());
-                self.show_settings = true;
-                return;
-            }
-            let custom = self.state.freellmapi.selected_model.clone();
-            (self.state.freellmapi.base_url.clone(), key, custom)
-        };
         let content = self.draft.trim().to_owned();
         if content.is_empty() && self.pending_attachments.is_empty() {
             return;
@@ -1300,8 +1363,21 @@ impl MnemosyneApp {
         }
         chat.messages.push(message);
         let project_path = project.path.clone();
-        let conversation = conversation_context(&chat.messages, self.state.context_limit).to_vec();
-        let initial_prompt = if chat.messages.len() > conversation.len() {
+        let turn_context = conversation_context(&chat.messages, self.state.context_limit);
+        let conversation = bounded_conversation_context(turn_context, MAX_CONVERSATION_CHARS);
+        let context_start = chat.messages.len().saturating_sub(conversation.len());
+        let summarized_through = chat.memory_compacted_through.min(context_start);
+        let pending_memory: Vec<Message> = chat.messages[summarized_through..context_start]
+            .iter()
+            .take(MAX_MEMORY_MESSAGES_PER_UPDATE)
+            .cloned()
+            .collect();
+        let memory_update_through = summarized_through + pending_memory.len();
+        let existing_memory = chat.memory_summary.clone();
+        let initial_prompt = if pending_memory.is_empty()
+            && existing_memory.is_empty()
+            && chat.messages.len() > conversation.len()
+        {
             chat.messages
                 .iter()
                 .find(|m| m.role == MessageRole::User)
@@ -1324,6 +1400,9 @@ impl MnemosyneApp {
         let approval_tx = self.approval_tx.clone();
         let active_child = Arc::clone(&self.active_child);
         let cancel_requested = Arc::clone(&self.cancel_requested);
+        let summary_model = custom_model
+            .clone()
+            .unwrap_or_else(|| "claude-sonnet-4-5".to_owned());
         if self.state.auto_rules_provision {
             let _ = ensure_curated_project_rules(
                 &project_path,
@@ -1333,15 +1412,43 @@ impl MnemosyneApp {
             );
         }
         let mcp_config = build_project_mcp_config(
-            &project_path,
             &self.state.decod_mcp_path,
             self.state.decod_mcp_enabled,
+            &self.state.designatio_mcp_path,
+            self.state.designatio_mcp_enabled,
         );
         thread::spawn(move || {
+            let compact_memory_now = should_compact_memory(&pending_memory);
+            let (memory_for_prompt, memory_update, memory_error) =
+                if pending_memory.is_empty() || !compact_memory_now {
+                    (existing_memory, None, None)
+                } else {
+                    match update_chat_memory(
+                        &api_base_url,
+                        &api_key,
+                        &summary_model,
+                        &existing_memory,
+                        &pending_memory,
+                    ) {
+                        Ok(summary) => (
+                            summary.clone(),
+                            Some((summary, memory_update_through)),
+                            None,
+                        ),
+                        Err(error) => (existing_memory, None, Some(error)),
+                    }
+                };
+            let fallback_memory = if memory_update.is_some() {
+                Vec::new()
+            } else {
+                pending_memory
+            };
             let result = run_claude(
                 &project_path,
                 &conversation,
                 initial_prompt.as_deref(),
+                &memory_for_prompt,
+                &fallback_memory,
                 &api_base_url,
                 &api_key,
                 agent_mode,
@@ -1354,6 +1461,7 @@ impl MnemosyneApp {
                 &cancel_requested,
                 mcp_config,
                 custom_model.as_deref(),
+                allow_custom_model,
             );
             let cancelled = cancel_requested.load(Ordering::SeqCst)
                 && matches!(&result, Err(error) if error == "Запит скасовано.");
@@ -1362,6 +1470,8 @@ impl MnemosyneApp {
                 chat_id,
                 cancelled,
                 result,
+                memory_update,
+                memory_error,
             });
         });
     }
@@ -1369,7 +1479,7 @@ impl MnemosyneApp {
     fn cancel_claude(&mut self) {
         self.cancel_requested.store(true, Ordering::SeqCst);
         self.status = Some(match stop_active_child(&self.active_child) {
-            Ok(()) => "Скасовую запит до Claude Code…".to_owned(),
+            Ok(()) => "Скасовую запит до моделі…".to_owned(),
             Err(error) => error,
         });
     }
@@ -1438,8 +1548,16 @@ impl MnemosyneApp {
         self.checking_local_model = true;
         self.save();
         let tx = self.local_model_check_tx.clone();
+        let selected_model = self.state.local_model.model_name.clone();
         thread::spawn(move || {
-            let result = fetch_local_models(&base_url);
+            let result = fetch_local_models(&base_url).and_then(|models| {
+                let model = if selected_model.trim().is_empty() {
+                    models.first().map(String::as_str)
+                } else {
+                    Some(selected_model.as_str())
+                };
+                test_local_model_round_trip(&base_url, model).map(|()| models)
+            });
             let _ = tx.send(ProviderCheckResult { base_url, result });
         });
     }
@@ -1779,6 +1897,7 @@ impl MnemosyneApp {
             self.busy = false;
             self.resolve_file_approval(false);
             let cancelled = response.cancelled;
+            let memory_updated = response.memory_update.is_some();
             let response_content = if cancelled {
                 self.streaming_content.clone()
             } else {
@@ -1803,6 +1922,10 @@ impl MnemosyneApp {
                     .iter_mut()
                     .find(|chat| chat.id == response.chat_id)
                 {
+                    if let Some((summary, compacted_through)) = response.memory_update {
+                        chat.memory_summary = summary;
+                        chat.memory_compacted_through = compacted_through;
+                    }
                     if !cancelled || !response_content.is_empty() {
                         chat.messages.push(Message {
                             role: MessageRole::Assistant,
@@ -1819,6 +1942,12 @@ impl MnemosyneApp {
             self.save();
             if cancelled {
                 self.status = Some("Запит скасовано.".to_owned());
+            } else if let Some(error) = response.memory_error {
+                self.status = Some(format!(
+                    "Відповідь отримано, але локальну пам’ять не оновлено: {error}"
+                ));
+            } else if memory_updated {
+                self.status = Some("Локальну пам’ять розмови оновлено.".to_owned());
             }
             ctx.request_repaint();
         }
@@ -2517,21 +2646,34 @@ impl eframe::App for MnemosyneApp {
                     let mut settings_changed = false;
                     ui.horizontal(|ui| {
                         ui.label("Модель:");
-                        let model_label = if let Some(ref m) = self.state.freellmapi.selected_model {
-                            m.clone()
+                        let selected_model = self.state.freellmapi.selected_model.clone();
+                        let auto_route = selected_model.is_none()
+                            && self.state.claude_model == ClaudeModel::Sonnet;
+                        let model_label = if auto_route {
+                            "Auto · FreeLLMAPI".to_owned()
                         } else {
-                            self.state.claude_model.label().to_owned()
+                            selected_model
+                                .clone()
+                                .unwrap_or_else(|| self.state.claude_model.label().to_owned())
                         };
                         egui::ComboBox::from_id_salt("chat-model-selector")
                             .selected_text(&model_label)
                             .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(auto_route, "Auto (FreeLLMAPI fallback)")
+                                    .clicked()
+                                {
+                                    self.state.freellmapi.selected_model = None;
+                                    self.state.claude_model = ClaudeModel::Sonnet;
+                                    settings_changed = true;
+                                }
+                                ui.separator();
                                 ui.label(egui::RichText::new("Claude").weak());
                                 for (model_variant, name) in [
-                                    (ClaudeModel::Sonnet, "Sonnet"),
-                                    (ClaudeModel::Opus, "Opus"),
-                                    (ClaudeModel::Haiku, "Haiku"),
+                                    (ClaudeModel::Opus, "Opus alias"),
+                                    (ClaudeModel::Haiku, "Haiku alias"),
                                 ] {
-                                    let is_active = self.state.freellmapi.selected_model.is_none()
+                                    let is_active = selected_model.is_none()
                                         && self.state.claude_model == model_variant;
                                     if ui.selectable_label(is_active, name).clicked() {
                                         self.state.freellmapi.selected_model = None;
@@ -2544,8 +2686,8 @@ impl eframe::App for MnemosyneApp {
                                     ui.separator();
                                     ui.label(egui::RichText::new("FreeLLMAPI").weak());
                                     for ready_m in &self.state.freellmapi.ready_models {
-                                        let is_active = self.state.freellmapi.selected_model.as_deref()
-                                            == Some(ready_m.as_str());
+                                        let is_active =
+                                            selected_model.as_deref() == Some(ready_m.as_str());
                                         if ui.selectable_label(is_active, ready_m).clicked() {
                                             self.state.freellmapi.selected_model = Some(ready_m.clone());
                                             settings_changed = true;
@@ -2553,6 +2695,16 @@ impl eframe::App for MnemosyneApp {
                                     }
                                 }
                             });
+                        if selected_model
+                            .as_deref()
+                            .map_or(false, |model| !is_claude_cli_model(model))
+                        {
+                            ui.weak(if self.state.lang == AppLang::En {
+                                "Agent tools stay enabled · FreeLLMAPI routes this model ID"
+                            } else {
+                                "Інструменти агента активні · FreeLLMAPI маршрутизує цей ID"
+                            });
+                        }
 
                         ui.separator();
 
@@ -2601,6 +2753,20 @@ impl eframe::App for MnemosyneApp {
                         self.save();
                     }
                     ui.separator();
+                    if let Some(memory_summary) = self
+                        .selected_chat()
+                        .map(|chat| chat.memory_summary.clone())
+                        .filter(|summary| !summary.is_empty())
+                    {
+                        let label = if self.state.lang == AppLang::En {
+                            "🧠 Local conversation memory (stored on this device)"
+                        } else {
+                            "🧠 Локальна пам’ять розмови (збережено на цьому пристрої)"
+                        };
+                        ui.collapsing(label, |ui| {
+                            ui.label(memory_summary);
+                        });
+                    }
 
                     egui::ScrollArea::vertical()
                         .stick_to_bottom(true)
@@ -3106,6 +3272,27 @@ impl eframe::App for MnemosyneApp {
                         if ui.small_button("Оновити список").clicked() {
                             refresh_files = true;
                         }
+                        if ui.small_button(if self.state.lang == AppLang::En {
+                            "Open Design preview"
+                        } else {
+                            "Відкрити Design preview"
+                        }).clicked() {
+                            if let Some(project_root) =
+                                self.selected_project().map(|project| project.path.clone())
+                            {
+                                let manifest_root = if project_root.join("mnemosyne-preview.json").is_file() {
+                                    project_root.clone()
+                                } else if project_root.join("output").join("react").join("mnemosyne-preview.json").is_file() {
+                                    project_root.join("output").join("react")
+                                } else {
+                                    project_root.clone()
+                                };
+                                match open_designatio_preview(&manifest_root) {
+                                    Ok(entry) => self.status = Some(format!("✓ Design preview opened: {entry}")),
+                                    Err(error) => self.status = Some(format!("✗ {error}")),
+                                }
+                            }
+                        }
                         if ui.small_button("+ План").clicked() {
                             requested_document = Some(ProjectDocumentKind::Plan);
                         }
@@ -3358,18 +3545,33 @@ impl eframe::App for MnemosyneApp {
                         ui.add_space(8.0);
                         let mut model_pick_changed = false;
                         let ready_models = self.state.freellmapi.ready_models.clone();
+                        let selected_model = self.state.freellmapi.selected_model.clone();
+                        let auto_route = selected_model.is_none()
+                            && self.state.claude_model == ClaudeModel::Sonnet;
                         ui.horizontal(|ui| {
                             ui.label("Вибрана модель:");
-                            let sel_label = self.state.freellmapi.selected_model.as_deref().unwrap_or("Claude (Default)");
+                            let sel_label = if auto_route {
+                                "Auto · FreeLLMAPI"
+                            } else {
+                                selected_model
+                                    .as_deref()
+                                    .unwrap_or(self.state.claude_model.label())
+                            };
                             egui::ComboBox::from_id_salt("freellmapi-selected-model-combo")
                                 .selected_text(sel_label)
                                 .show_ui(ui, |ui| {
-                                    if ui.selectable_label(self.state.freellmapi.selected_model.is_none(), "Claude (Default)").clicked() {
+                                    if ui
+                                        .selectable_label(auto_route, "Auto (FreeLLMAPI fallback)")
+                                        .clicked()
+                                    {
                                         self.state.freellmapi.selected_model = None;
+                                        self.state.claude_model = ClaudeModel::Sonnet;
                                         model_pick_changed = true;
                                     }
+                                    ui.separator();
+                                    ui.label(egui::RichText::new("FreeLLMAPI models").weak());
                                     for m in &ready_models {
-                                        let is_sel = self.state.freellmapi.selected_model.as_deref() == Some(m.as_str());
+                                        let is_sel = selected_model.as_deref() == Some(m.as_str());
                                         if ui.selectable_label(is_sel, m).clicked() {
                                             self.state.freellmapi.selected_model = Some(m.clone());
                                             model_pick_changed = true;
@@ -3379,6 +3581,16 @@ impl eframe::App for MnemosyneApp {
                         });
                         if model_pick_changed {
                             self.save();
+                        }
+                        if selected_model
+                            .as_deref()
+                            .map_or(false, |model| !is_claude_cli_model(model))
+                        {
+                            ui.weak(if self.state.lang == AppLang::En {
+                                "This exact model ID is sent through FreeLLMAPI's Anthropic API; agent tools stay enabled."
+                            } else {
+                                "Цей ID передається через Anthropic API FreeLLMAPI; інструменти агента активні."
+                            });
                         }
                         ui.collapsing(if self.state.lang == AppLang::En { "Available FreeLLMAPI Models" } else { "Усі моделі у FreeLLMAPI" }, |ui| {
                             for model in &ready_models {
@@ -3485,9 +3697,9 @@ impl eframe::App for MnemosyneApp {
                     } else {
                         ui.colored_label(egui::Color32::LIGHT_RED, l.claude_cli_missing);
                         ui.label(if self.state.lang == AppLang::En {
-                            "Install Claude Code CLI to send queries to models."
+                            "Install Claude Code CLI to use the coding agent and its tools with all FreeLLMAPI models."
                         } else {
-                            "Встановіть Claude Code CLI, щоб надсилати запити до моделей."
+                            "Встановіть Claude Code CLI, щоб користуватися агентом та його інструментами з усіма моделями FreeLLMAPI."
                         });
                         ui.horizontal(|ui| {
                             if ui.add_enabled(
@@ -3525,36 +3737,13 @@ impl eframe::App for MnemosyneApp {
                     }
                     ui.horizontal(|ui| {
                         if ui.button(l.decod_check).clicked() {
-                            let path = self.state.decod_mcp_path.clone();
-                            match silent_command("python")
-                                .args([&path, "--version"])
-                                .output()
-                            {
-                                Ok(output) if output.status.success() => {
-                                    self.decod_mcp_check_status = Some(format!(
-                                        "✓ Decod MCP: {}",
-                                        String::from_utf8_lossy(&output.stdout).trim()
-                                    ));
-                                }
-                                Ok(output) => {
-                                    let stderr = String::from_utf8_lossy(&output.stderr);
-                                    if !stderr.trim().is_empty() {
-                                        self.decod_mcp_check_status = Some(format!(
-                                            "✗ Помилка: {}",
-                                            stderr.trim()
-                                        ));
-                                    } else {
-                                        self.decod_mcp_check_status = Some(
-                                            "✗ Скрипт завершився з помилкою".to_owned(),
-                                        );
+                            self.decod_mcp_check_status =
+                                Some(match check_decod_mcp(&self.state.decod_mcp_path) {
+                                    Ok(tool_count) => {
+                                        format!("✓ Decod MCP відповідає; інструментів: {tool_count}")
                                     }
-                                }
-                                Err(error) => {
-                                    self.decod_mcp_check_status = Some(format!(
-                                        "✗ Не вдалося запустити: {error}"
-                                    ));
-                                }
-                            }
+                                    Err(error) => format!("✗ {error}"),
+                                });
                         }
                         if let Some(status) = &self.decod_mcp_check_status {
                             if status.starts_with('✓') {
@@ -3566,6 +3755,38 @@ impl eframe::App for MnemosyneApp {
                     });
                     if self.state.decod_mcp_enabled {
                         ui.weak(l.decod_active_hint);
+                    }
+
+                    // ── Designatio MCP ──────────────────────────────────────────
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.heading(format!("⚙ {}", l.designatio_section));
+                    let mut designatio_enabled = self.state.designatio_mcp_enabled;
+                    if ui.checkbox(&mut designatio_enabled, l.designatio_enable).changed() {
+                        self.state.designatio_mcp_enabled = designatio_enabled;
+                        self.save();
+                    }
+                    ui.label(format!("{}:", l.designatio_path));
+                    if ui.text_edit_singleline(&mut self.state.designatio_mcp_path).changed() {
+                        self.save();
+                    }
+                    if ui.button(l.designatio_check).clicked() {
+                        let root = PathBuf::from(self.state.designatio_mcp_path.trim());
+                        let pyproject = root.join("pyproject.toml");
+                        let server = root.join("designatio").join("mcp").join("server.py");
+                        self.designatio_mcp_check_status = Some(if pyproject.is_file() && server.is_file() {
+                            "✓ Designatio MCP found".to_owned()
+                        } else {
+                            "✗ Designatio pyproject.toml or MCP server not found".to_owned()
+                        });
+                    }
+                    if let Some(status) = &self.designatio_mcp_check_status {
+                        let color = if status.starts_with('✓') {
+                            egui::Color32::LIGHT_GREEN
+                        } else {
+                            egui::Color32::LIGHT_RED
+                        };
+                        ui.colored_label(color, status);
                     }
 
                     // ── Superpowers & Vibe-Coding ─────────────────────────────
@@ -4328,6 +4549,328 @@ fn conversation_context(
     &messages[start..]
 }
 
+fn bounded_conversation_context(messages: &[Message], max_chars: usize) -> Vec<Message> {
+    let mut selected = Vec::new();
+    let mut used_chars = 0;
+
+    for message in messages.iter().rev() {
+        let attachment_chars = message.attachments.len().saturating_mul(128);
+        let message_chars = message.content.chars().count() + attachment_chars + 32;
+        if used_chars + message_chars <= max_chars {
+            selected.push(message.clone());
+            used_chars += message_chars;
+            continue;
+        }
+
+        if selected.is_empty() {
+            let content_budget = max_chars.saturating_sub(attachment_chars + 32);
+            let mut trimmed = message.clone();
+            trimmed.content = message.content.chars().take(content_budget).collect();
+            selected.push(trimmed);
+        }
+        break;
+    }
+
+    selected.reverse();
+    selected
+}
+
+fn should_compact_memory(messages: &[Message]) -> bool {
+    let old_user_turns = messages
+        .iter()
+        .filter(|message| message.role == MessageRole::User)
+        .count();
+    let content_chars: usize = messages
+        .iter()
+        .map(|message| message.content.chars().count())
+        .sum();
+    old_user_turns >= 4 || content_chars >= MAX_MEMORY_INPUT_CHARS
+}
+
+fn compact_local_chat_memory(existing_summary: &str, messages: &[Message]) -> String {
+    let header = "Локальний конспект архіву (без API; оригінальні повідомлення збережено):\n";
+    let prior_budget = if messages.is_empty() {
+        MAX_MEMORY_SUMMARY_CHARS.saturating_sub(header.chars().count())
+    } else {
+        MAX_MEMORY_SUMMARY_CHARS / 3
+    };
+    let prior = excerpt_with_ends(existing_summary, prior_budget);
+    let mut summary = String::from(header);
+    if !prior.is_empty() {
+        summary.push_str("\nПопередня пам’ять:\n");
+        summary.push_str(&prior);
+    }
+
+    if !messages.is_empty() {
+        summary.push_str("\n\nАрхівні повідомлення:\n");
+        let mut entries = Vec::new();
+        let mut remaining = MAX_MEMORY_SUMMARY_CHARS.saturating_sub(summary.chars().count());
+        for (index, message) in messages.iter().enumerate().rev() {
+            let role = match message.role {
+                MessageRole::User => "Користувач",
+                MessageRole::Assistant => "Асистент",
+            };
+            let attachment_names = message
+                .attachments
+                .iter()
+                .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let attachment_note = if attachment_names.is_empty() {
+                String::new()
+            } else {
+                format!(" [вкладення: {attachment_names}]")
+            };
+            let prefix = format!(
+                "\n[{}] {role}{attachment_note}: ",
+                message.created_at.format("%Y-%m-%d")
+            );
+            let left_count = index + 1;
+            let line_budget = remaining / left_count;
+            let content_budget = line_budget.saturating_sub(prefix.chars().count());
+            if content_budget == 0 {
+                break;
+            }
+            let entry = format!(
+                "{prefix}{}",
+                excerpt_with_ends(&message.content, content_budget)
+            );
+            let entry_chars = entry.chars().count();
+            if entry_chars > remaining {
+                break;
+            }
+            remaining -= entry_chars;
+            entries.push(entry);
+        }
+        entries.reverse();
+        for entry in entries {
+            summary.push_str(&entry);
+        }
+    }
+
+    summary.chars().take(MAX_MEMORY_SUMMARY_CHARS).collect()
+}
+
+fn excerpt_with_ends(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_owned();
+    }
+    if max_chars <= 3 {
+        return text.chars().take(max_chars).collect();
+    }
+
+    let content_budget = max_chars - 3;
+    let head_chars = content_budget * 2 / 3;
+    let tail_chars = content_budget - head_chars;
+    let head: String = text.chars().take(head_chars).collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}...{tail}")
+}
+
+fn compact_all_chat_memories_locally(state: &mut AppState) -> (usize, usize) {
+    let context_limit = state.context_limit;
+    let mut compacted_chats = 0;
+    let mut compacted_messages = 0;
+    for project in &mut state.projects {
+        for chat in &mut project.chats {
+            let recent_context = bounded_conversation_context(
+                conversation_context(&chat.messages, context_limit),
+                MAX_CONVERSATION_CHARS,
+            );
+            let context_start = chat.messages.len().saturating_sub(recent_context.len());
+            let summarized_through = chat.memory_compacted_through.min(context_start);
+            if summarized_through >= context_start {
+                continue;
+            }
+            let archived_messages = &chat.messages[summarized_through..context_start];
+            chat.memory_summary =
+                compact_local_chat_memory(&chat.memory_summary, archived_messages);
+            chat.memory_compacted_through = context_start;
+            compacted_chats += 1;
+            compacted_messages += archived_messages.len();
+        }
+    }
+    (compacted_chats, compacted_messages)
+}
+
+fn run_local_memory_compaction() -> Result<(), String> {
+    let mut state = load_state()?;
+    let (compacted_chats, compacted_messages) = compact_all_chat_memories_locally(&mut state);
+    if compacted_chats == 0 {
+        return Ok(());
+    }
+
+    let path = state_path()?;
+    if path.exists() {
+        let backup_path = path.with_file_name(format!(
+            "state-before-local-compaction-{}.json",
+            Local::now().format("%Y%m%d-%H%M%S-%f")
+        ));
+        fs::copy(&path, &backup_path).map_err(|error| {
+            format!(
+                "Не вдалося створити резервну копію {}: {error}",
+                backup_path.display()
+            )
+        })?;
+    }
+    save_state(&state)?;
+    eprintln!(
+        "Локально стиснуто {compacted_messages} старих повідомлень у {compacted_chats} чатах; повну історію збережено."
+    );
+    Ok(())
+}
+
+fn split_text_into_chunks(text: &str, max_chars: usize) -> Vec<String> {
+    let max_chars = max_chars.max(1);
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut chunk_start = 0;
+    for (char_index, (byte_index, _)) in text.char_indices().enumerate() {
+        if char_index > 0 && char_index % max_chars == 0 {
+            chunks.push(text[chunk_start..byte_index].to_owned());
+            chunk_start = byte_index;
+        }
+    }
+    chunks.push(text[chunk_start..].to_owned());
+    chunks
+}
+
+fn memory_message_chunks(messages: &[Message]) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let content_budget = MAX_MEMORY_INPUT_CHARS.saturating_sub(MAX_MEMORY_SUMMARY_CHARS);
+    let message_chunk_chars = content_budget.saturating_sub(256).max(1);
+
+    for message in messages {
+        let role = match message.role {
+            MessageRole::User => "Користувач",
+            MessageRole::Assistant => "Асистент",
+        };
+        let attachment_names = message
+            .attachments
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let content: String = message
+            .content
+            .chars()
+            .take(MAX_CONVERSATION_CHARS)
+            .collect();
+        let content_truncated = message.content.chars().count() > MAX_CONVERSATION_CHARS;
+        let content_parts = split_text_into_chunks(&content, message_chunk_chars);
+        for (index, content) in content_parts.iter().enumerate() {
+            let continuation = if index == 0 {
+                ""
+            } else {
+                " (продовження)"
+            };
+            let attachments = if index == 0 && !attachment_names.is_empty() {
+                format!(" (вкладення: {attachment_names})")
+            } else {
+                String::new()
+            };
+            let truncation_note = if content_truncated && index + 1 == content_parts.len() {
+                "\n[повідомлення обрізано для компактного підсумку]"
+            } else {
+                ""
+            };
+            let entry =
+                format!("\n\n{role}{continuation}{attachments}:\n{content}{truncation_note}");
+            if !current.is_empty()
+                && current.chars().count() + entry.chars().count() > content_budget
+            {
+                chunks.push(std::mem::take(&mut current));
+            }
+            current.push_str(&entry);
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn update_chat_memory(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    existing_summary: &str,
+    messages: &[Message],
+) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("Не вдалося створити HTTP-клієнт пам’яті: {error}"))?;
+    let chunks = memory_message_chunks(messages);
+    if chunks.is_empty() {
+        return Ok(existing_summary.to_owned());
+    }
+
+    let mut summary = existing_summary.to_owned();
+    for chunk in chunks {
+        let prompt = format!(
+            "Поточна пам’ять розмови:\n{}\n\nНові повідомлення для інтеграції:\n{}",
+            if summary.is_empty() {
+                "(поки порожньо)"
+            } else {
+                summary.as_str()
+            },
+            chunk
+        );
+        let response = client
+            .post(format!("{base_url}/v1/messages"))
+            .header("x-api-key", api_key)
+            .bearer_auth(api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": model,
+                "max_tokens": 1200,
+                "system": "Онови коротку довготривалу пам’ять для наступних повідомлень у цій розмові. Збережи конкретні цілі, рішення, обмеження, назви файлів/проєктів і незавершені кроки; прибери повтори й застарілі деталі. Не вигадуй фактів. Поверни лише самостійний стислий підсумок українською або мовою розмови.",
+                "messages": [{"role": "user", "content": prompt}]
+            }))
+            .send()
+            .map_err(|error| format!("Не вдалося оновити локальну пам’ять чату: {error}"))?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().map_err(|error| {
+            format!("API пам’яті повернув некоректну відповідь (HTTP {status}): {error}")
+        })?;
+        if !status.is_success() {
+            let detail = body
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("провайдер відхилив запит");
+            return Err(format!("API пам’яті відповів HTTP {status}: {detail}"));
+        }
+        let updated = body
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+            .collect::<String>();
+        if updated.trim().is_empty() {
+            return Err("Модель повернула порожній підсумок пам’яті.".to_owned());
+        }
+        summary = updated.chars().take(MAX_MEMORY_SUMMARY_CHARS).collect();
+    }
+    Ok(summary)
+}
+
 fn normalize_chat_title(title: &str) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 80 {
@@ -4380,6 +4923,8 @@ fn clear_chat_messages(project: &mut Project, chat_id: &str) -> bool {
         return false;
     };
     chat.messages.clear();
+    chat.memory_summary.clear();
+    chat.memory_compacted_through = 0;
     true
 }
 
@@ -4470,7 +5015,6 @@ impl ApprovalServer {
             "env": {
                 "ANTHROPIC_BASE_URL": api_base_url,
                 "ANTHROPIC_AUTH_TOKEN": api_key,
-                "ANTHROPIC_API_KEY": api_key,
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
             },
             "apiKeyHelper": "",
@@ -4753,6 +5297,8 @@ fn run_claude(
     project_path: &Path,
     messages: &[Message],
     initial_prompt: Option<&str>,
+    memory_summary: &str,
+    fallback_memory: &[Message],
     api_base_url: &str,
     api_key: &str,
     agent_mode: AgentMode,
@@ -4765,6 +5311,7 @@ fn run_claude(
     cancel_requested: &Arc<AtomicBool>,
     mcp_config: Option<String>,
     custom_model: Option<&str>,
+    allow_custom_model: bool,
 ) -> Result<String, String> {
     let has_attachments = messages
         .iter()
@@ -4782,13 +5329,32 @@ fn run_claude(
         Arc::clone(cancel_requested),
     )?);
     let mut total_attachment_bytes = 0;
+    let mut total_inline_attachment_chars = 0;
     let mut staged_attachment_index = 0;
     let mut prompt = String::new();
+    if !memory_summary.trim().is_empty() {
+        prompt
+            .push_str("[Локальна пам’ять розмови — стислий контекст з попередніх повідомлень]:\n");
+        prompt.push_str(memory_summary);
+        prompt.push_str("\n\n---\n");
+    }
     if let Some(initial) = initial_prompt {
         prompt.push_str("[Початкова мета проекту/розмови (збережено для орієнтації моделі)]:\n");
         let truncated_initial: String = initial.chars().take(800).collect();
         prompt.push_str(&truncated_initial);
         prompt.push_str("\n\n---\n[Останні актуальні кроки діалогу]:");
+    }
+    if !fallback_memory.is_empty() {
+        prompt.push_str("\n\n[Старі повідомлення, які ще не вдалося стиснути]:\n");
+        let fallback = bounded_conversation_context(fallback_memory, 8_000);
+        for message in fallback {
+            prompt.push_str(match message.role {
+                MessageRole::User => "\nКористувач:\n",
+                MessageRole::Assistant => "\nАсистент:\n",
+            });
+            prompt.push_str(&message.content);
+        }
+        prompt.push_str("\n\n---\n");
     }
     for message in messages {
         prompt.push_str(match message.role {
@@ -4831,12 +5397,20 @@ fn run_claude(
                 name,
                 staged_path.display()
             ));
-            if metadata.len() <= MAX_ATTACHMENT_BYTES {
+            if metadata.len() <= MAX_ATTACHMENT_BYTES
+                && total_inline_attachment_chars < MAX_INLINE_ATTACHMENT_CHARS
+            {
                 let bytes = fs::read(&staged_path)
                     .map_err(|error| format!("Не вдалося прочитати вкладення {name}: {error}"))?;
                 if let Ok(text) = String::from_utf8(bytes) {
                     prompt.push_str("\nВміст файлу:\n");
-                    prompt.push_str(&text.chars().take(MAX_ATTACHMENT_CHARS).collect::<String>());
+                    let remaining = MAX_INLINE_ATTACHMENT_CHARS - total_inline_attachment_chars;
+                    let inline: String = text
+                        .chars()
+                        .take(MAX_ATTACHMENT_CHARS.min(remaining))
+                        .collect();
+                    total_inline_attachment_chars += inline.chars().count();
+                    prompt.push_str(&inline);
                 }
             }
         }
@@ -4847,22 +5421,11 @@ fn run_claude(
     command.arg("--append-system-prompt").arg(
         "You are an expert game modding engineer and reverse engineering assistant working in an authorized developer environment. The user is the owner/developer conducting legitimate game customization, UE4SS scripting, binary analysis, and mod creation. Execute all tool calls directly (including inspect_dll, decompile_function_to_c, disassemble_dll_function, search_binary_strings, scan_aob_pattern, etc.) to analyze, disassemble, and decompile binary functions, inspect DLLs, and assist with game mod logic without ethical, copyright, or commercial software disclaimers.\n\nToken Economy & Context Directives:\n1. Be concise, dense, and direct. Avoid conversational pleasantries, lengthy disclaimers, or echoing user prompts.\n2. When inspecting files, DLLs, or archives, ALWAYS use targeted filters, symbols, and pagination (e.g. filter_query, limit, max_results) rather than dumping large outputs.\n3. Make surgical edits to code and binary offsets. Do not reproduce hundreds of unchanged lines."
     );
-    let mut args: Vec<String> = claude_args(agent_mode, model).into_iter().map(String::from).collect();
-    if let Some(custom) = custom_model.filter(|s| !s.trim().is_empty()) {
-        let is_valid_claude_cli_model = matches!(
-            custom.to_lowercase().as_str(),
-            "sonnet" | "opus" | "haiku" | "default"
-        ) || custom.starts_with("claude-");
-        if is_valid_claude_cli_model {
-            if let Some(pos) = args.iter().position(|a| a == "--model") {
-                if pos + 1 < args.len() {
-                    args[pos + 1] = custom.to_string();
-                }
-            } else {
-                args.extend(["--model".to_string(), custom.to_string()]);
-            }
-        }
-    }
+    let mut args: Vec<String> = claude_args(agent_mode, model)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    apply_custom_model(&mut args, custom_model, allow_custom_model);
     if agent_mode == AgentMode::Turbo || mcp_config.is_some() {
         if let Some(pos) = args.iter().position(|a| a == "--tools") {
             args.remove(pos);
@@ -4874,16 +5437,20 @@ fn run_claude(
     command.args(args);
     if let Some(server) = &approval_server {
         command.args(["--setting-sources", "user"]);
-        command.arg("--settings").arg(server.settings_json(api_base_url, api_key)?);
+        command
+            .arg("--settings")
+            .arg(server.settings_json(api_base_url, api_key)?);
     }
     if let Some(staging) = &staging {
         command.args(["--add-dir", staging.path.to_string_lossy().as_ref()]);
     }
     let mcp_file_guard = if let Some(mcp_json) = &mcp_config {
         let path = std::env::temp_dir().join(format!("mnemosyne-mcp-{}.json", Uuid::new_v4()));
-        let _ = fs::write(&path, mcp_json);
+        let guard = TempFileGuard(path.clone());
+        fs::write(&path, mcp_json)
+            .map_err(|error| format!("Не вдалося записати конфігурацію Decod MCP: {error}"))?;
         command.arg("--mcp-config").arg(&path);
-        Some(TempFileGuard(path))
+        Some(guard)
     } else {
         None
     };
@@ -4892,7 +5459,6 @@ fn run_claude(
         .current_dir(project_path)
         .env("ANTHROPIC_BASE_URL", api_base_url)
         .env("ANTHROPIC_AUTH_TOKEN", api_key)
-        .env("ANTHROPIC_API_KEY", api_key)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4980,6 +5546,10 @@ fn run_claude(
                     });
                 }
                 Ok(Some(ClaudeStreamEvent::Result(text))) => final_text = Some(text),
+                Ok(Some(ClaudeStreamEvent::Error(error))) => {
+                    stream_error = Some(error);
+                    break;
+                }
                 Ok(None) => {}
                 Err(error) => {
                     stream_error = Some(error);
@@ -5017,11 +5587,14 @@ fn run_claude(
         return Err(error);
     }
     if !status.success() {
-        return Err(if stderr.trim().is_empty() {
-            format!("Claude Code завершився з кодом {status}.")
-        } else {
+        let detail = if !stderr.trim().is_empty() {
             stderr.trim().to_owned()
-        });
+        } else if let Some(result) = final_text.filter(|text| !text.trim().is_empty()) {
+            result
+        } else {
+            format!("Claude Code завершився з кодом {status}.")
+        };
+        return Err(detail);
     }
     Ok(final_text.unwrap_or(streamed_text).trim().to_owned())
 }
@@ -5030,6 +5603,7 @@ enum ClaudeStreamEvent {
     Text(String),
     Tool(String),
     Result(String),
+    Error(String),
 }
 
 fn parse_claude_stream_event(line: &str) -> Result<Option<ClaudeStreamEvent>, String> {
@@ -5041,6 +5615,42 @@ fn parse_claude_stream_event(line: &str) -> Result<Option<ClaudeStreamEvent>, St
         Ok(val) => val,
         Err(_) => return Ok(None),
     };
+    if event.get("type").and_then(serde_json::Value::as_str) == Some("system")
+        && event.get("subtype").and_then(serde_json::Value::as_str) == Some("api_error")
+    {
+        let error = event.get("error");
+        let detail = error
+            .and_then(|error| error.get("formatted"))
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                error
+                    .and_then(|error| error.get("message"))
+                    .and_then(serde_json::Value::as_str)
+            })
+            .unwrap_or("Claude Code отримав помилку від API.");
+        return Ok(Some(ClaudeStreamEvent::Error(
+            detail.chars().take(4_000).collect(),
+        )));
+    }
+    if event
+        .get("isApiErrorMessage")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        let status = event
+            .get("apiErrorStatus")
+            .and_then(serde_json::Value::as_u64)
+            .map(|status| format!("HTTP {status}: "))
+            .unwrap_or_default();
+        let detail = event
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Claude Code отримав помилку від API.");
+        return Ok(Some(ClaudeStreamEvent::Error(format!(
+            "{status}{}",
+            detail.chars().take(4_000).collect::<String>()
+        ))));
+    }
     match event.get("type").and_then(serde_json::Value::as_str) {
         Some("stream_event") => {
             let stream_event = event.get("event");
@@ -5161,6 +5771,33 @@ fn claude_args(agent_mode: AgentMode, model: ClaudeModel) -> Vec<&'static str> {
         }
     }
     args
+}
+
+fn apply_custom_model(args: &mut Vec<String>, custom_model: Option<&str>, allow_custom: bool) {
+    let Some(custom) = custom_model.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    if !allow_custom && !is_claude_cli_model(custom) {
+        return;
+    }
+
+    if let Some(position) = args.iter().position(|argument| argument == "--model") {
+        if position + 1 < args.len() {
+            args[position + 1] = custom.to_owned();
+        }
+    } else {
+        args.extend(["--model".to_owned(), custom.to_owned()]);
+    }
+}
+
+fn is_claude_cli_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    matches!(model.as_str(), "sonnet" | "opus" | "haiku" | "default")
+        || model.starts_with("claude-")
+}
+
+fn is_available_catalog_model(model: &str, ready_models: &[String]) -> bool {
+    ready_models.iter().any(|ready_model| ready_model == model)
 }
 
 fn freellmapi_key_entry() -> Result<keyring::Entry, String> {
@@ -5288,10 +5925,68 @@ fn fetch_local_models(base_url: &str) -> Result<Vec<String>, String> {
             response.status()
         ));
     }
-    let body: serde_json::Value = response
-        .json()
-        .map_err(|error| format!("Локальний сервер повернув некоректний JSON списку моделей: {error}"))?;
+    let body: serde_json::Value = response.json().map_err(|error| {
+        format!("Локальний сервер повернув некоректний JSON списку моделей: {error}")
+    })?;
     parse_local_models(&body)
+}
+
+fn test_local_model_round_trip(base_url: &str, model: Option<&str>) -> Result<(), String> {
+    let model = model
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| "Локальний сервер не надав назву моделі для тесту.".to_owned())?;
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("Не вдалося створити HTTP-клієнт: {error}"))?
+        .post(format!("{base_url}/v1/messages"))
+        .header("x-api-key", "local-model-token")
+        .bearer_auth("local-model-token")
+        .header("anthropic-version", "2023-06-01")
+        .json(&serde_json::json!({
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "Reply with one character."}]
+        }))
+        .send()
+        .map_err(|error| {
+            format!(
+                "Локальний сервер доступний, але Anthropic Messages API (/v1/messages) недоступний: {error}"
+            )
+        })?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().map_err(|error| {
+        format!("Локальний сервер повернув некоректну відповідь чату (HTTP {status}): {error}")
+    })?;
+    if !status.is_success() {
+        let detail = body
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("перевірте модель та сумісність API");
+        return Err(format!(
+            "Локальний сервер не прийняв запит до чату (HTTP {status}): {detail}"
+        ));
+    }
+    validate_anthropic_message_response(&body)
+}
+
+fn validate_anthropic_message_response(body: &serde_json::Value) -> Result<(), String> {
+    if let Some(error) = body.get("error") {
+        return Err(error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Модель повернула помилку")
+            .to_owned());
+    }
+    if !body
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .is_some()
+    {
+        return Err("Відповідь не відповідає формату Anthropic Messages API.".to_owned());
+    }
+    Ok(())
 }
 
 fn parse_local_models(body: &serde_json::Value) -> Result<Vec<String>, String> {
@@ -5299,7 +5994,9 @@ fn parse_local_models(body: &serde_json::Value) -> Result<Vec<String>, String> {
         .get("data")
         .and_then(serde_json::Value::as_array)
         .or_else(|| body.as_array())
-        .ok_or_else(|| "Локальний сервер повернув каталог моделей у невідомому форматі.".to_owned())?;
+        .ok_or_else(|| {
+            "Локальний сервер повернув каталог моделей у невідомому форматі.".to_owned()
+        })?;
     let models: Vec<String> = entries
         .iter()
         .filter_map(|entry| {
@@ -5973,15 +6670,26 @@ fn test_freellmapi_round_trip(
         .post(&url)
         .header("x-api-key", api_key)
         .bearer_auth(api_key)
+        .header("anthropic-version", "2023-06-01")
         .json(&body)
         .send()
         .map_err(|error| format!("Не вдалося з'єднатися з FreeLLMAPI: {error}"))?;
-    if !response.status().is_success() {
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|error| format!("FreeLLMAPI повернув некоректний JSON: {error}"))?;
+    if !status.is_success() {
+        let detail = body
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("провайдер відхилив запит");
         return Err(format!(
-            "FreeLLMAPI відповів HTTP {} для тестового запиту",
-            response.status()
+            "FreeLLMAPI відповів HTTP {status} для тестового запиту: {detail}"
         ));
     }
+    validate_anthropic_message_response(&body)
+        .map_err(|error| format!("FreeLLMAPI повернув помилку моделі: {error}"))?;
     Ok(model.to_owned())
 }
 
@@ -6047,6 +6755,13 @@ fn load_app_icon() -> Option<egui::IconData> {
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--compact-chat-memory-locally") {
+        if let Err(error) = run_local_memory_compaction() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("--mnemosyne-approval-hook") {
         let Some(address) = args.get(1) else {
             eprintln!("Не вказано адресу перевірки змін.");
@@ -6233,6 +6948,116 @@ pub fn ensure_curated_project_rules(
     Ok(claude_md)
 }
 
+fn check_decod_mcp(configured_path: &str) -> Result<usize, String> {
+    let path = resolve_decod_path(configured_path);
+    if !path.is_file() {
+        return Err(format!("MCP-скрипт Decod не знайдено: {}", path.display()));
+    }
+
+    let mut child = silent_command("python")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Не вдалося запустити Python для Decod: {error}"))?;
+    let input = child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "Не вдалося відкрити stdin сервера Decod.".to_owned())?;
+    for request in [
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "Mnemosyne", "version": env!("CARGO_PKG_VERSION")}
+            }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    ] {
+        serde_json::to_writer(&mut *input, &request)
+            .map_err(|error| format!("Не вдалося сформувати запит до Decod MCP: {error}"))?;
+        input
+            .write_all(b"\n")
+            .map_err(|error| format!("Не вдалося передати запит до Decod MCP: {error}"))?;
+    }
+    drop(child.stdin.take());
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Не вдалося дочекатися відповіді Decod MCP: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let tools_response = stdout.lines().find_map(|line| {
+        let response: serde_json::Value = serde_json::from_str(line).ok()?;
+        (response.get("id").and_then(serde_json::Value::as_i64) == Some(2)).then_some(response)
+    });
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(if stderr.trim().is_empty() {
+            format!("Сервер Decod завершився з кодом {}.", output.status)
+        } else {
+            format!("Помилка запуску Decod: {}", stderr.trim())
+        });
+    }
+    let response = tools_response
+        .ok_or_else(|| "Decod не повернув коректну відповідь tools/list.".to_owned())?;
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("невідома помилка JSON-RPC");
+        return Err(format!("Decod MCP: {message}"));
+    }
+    let tools = response
+        .get("result")
+        .and_then(|result| result.get("tools"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Decod повернув tools/list у невідомому форматі.".to_owned())?;
+    if tools.is_empty() {
+        return Err("Decod підключився, але не надав MCP-інструментів.".to_owned());
+    }
+    Ok(tools.len())
+}
+
+fn find_designatio_preview_entry(project_root: &Path) -> Result<PathBuf, String> {
+    let manifest = project_root.join("mnemosyne-preview.json");
+    if !manifest.is_file() {
+        return Err("Mnemosyne preview manifest not found.".to_owned());
+    }
+    let text = fs::read_to_string(&manifest)
+        .map_err(|error| format!("Не вдалося прочитати preview manifest: {error}"))?;
+    let parsed: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("Не вдалося розібрати preview manifest: {error}"))?;
+    let entry = parsed
+        .pointer("/preview/entry")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "Preview manifest does not contain preview.entry.".to_owned())?;
+    let path = PathBuf::from(entry);
+    if !path.is_file() {
+        return Err(format!("Preview entry not found: {}", path.display()));
+    }
+    Ok(path)
+}
+
+fn open_designatio_preview(project_root: &Path) -> Result<String, String> {
+    let path = find_designatio_preview_entry(project_root)?;
+    open::that(&path)
+        .map_err(|error| format!("Не вдалося відкрити preview: {error}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn resolve_decod_path(configured_path: &str) -> PathBuf {
     let p = PathBuf::from(configured_path);
     if p.exists() {
@@ -6260,23 +7085,39 @@ fn resolve_decod_path(configured_path: &str) -> PathBuf {
 }
 
 fn build_project_mcp_config(
-    _project_path: &Path,
     decod_path: &str,
     decod_enabled: bool,
+    designatio_path: &str,
+    designatio_enabled: bool,
 ) -> Option<String> {
-    if !decod_enabled {
+    let mut servers = serde_json::Map::new();
+    let python_command = if cfg!(windows) { "python" } else { "python3" };
+    if decod_enabled {
+        let resolved = resolve_decod_path(decod_path);
+        servers.insert(
+            "decod".to_string(),
+            serde_json::json!({
+                "command": python_command,
+                "args": [resolved.to_string_lossy().to_string()]
+            }),
+        );
+    }
+
+    let designatio_dir = PathBuf::from(designatio_path);
+    if designatio_enabled && designatio_dir.join("pyproject.toml").exists() {
+        servers.insert(
+            "designatio".to_string(),
+            serde_json::json!({
+                "command": python_command,
+                "args": ["-m", "designatio.mcp.server"],
+                "cwd": designatio_dir.to_string_lossy().to_string()
+            }),
+        );
+    }
+
+    if servers.is_empty() {
         return None;
     }
-    let resolved = resolve_decod_path(decod_path);
-    let mut servers = serde_json::Map::new();
-
-    servers.insert(
-        "decod".to_string(),
-        serde_json::json!({
-            "command": "python",
-            "args": [resolved.to_string_lossy().to_string()]
-        }),
-    );
 
     let config = serde_json::json!({
         "mcpServers": servers
@@ -6462,6 +7303,32 @@ mod tests {
             parse_claude_stream_event(&result).unwrap(),
             Some(ClaudeStreamEvent::Result(text)) if text == "hello world"
         ));
+        let api_error = serde_json::json!({
+            "type": "system",
+            "subtype": "api_error",
+            "error": {
+                "status": "502",
+                "message": "All model routes failed",
+                "formatted": "502 All model routes failed"
+            }
+        })
+        .to_string();
+        assert!(matches!(
+            parse_claude_stream_event(&api_error).unwrap(),
+            Some(ClaudeStreamEvent::Error(message)) if message == "502 All model routes failed"
+        ));
+
+        let assistant_api_error = serde_json::json!({
+            "type": "assistant",
+            "isApiErrorMessage": true,
+            "apiErrorStatus": 404,
+            "error": "model_not_found"
+        })
+        .to_string();
+        assert!(matches!(
+            parse_claude_stream_event(&assistant_api_error).unwrap(),
+            Some(ClaudeStreamEvent::Error(message)) if message == "HTTP 404: model_not_found"
+        ));
         assert!(
             parse_claude_stream_event(r#"{"type":"system","subtype":"init"}"#)
                 .unwrap()
@@ -6501,10 +7368,55 @@ mod tests {
     }
 
     #[test]
+    fn local_and_verified_catalog_model_overrides_are_applied() {
+        let mut local_args = claude_args(AgentMode::Plan, ClaudeModel::Sonnet)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        apply_custom_model(&mut local_args, Some("llama-local"), true);
+        let model_position = local_args.iter().position(|arg| arg == "--model").unwrap();
+        assert_eq!(local_args[model_position + 1], "llama-local");
+
+        let mut remote_args = claude_args(AgentMode::Plan, ClaudeModel::Sonnet)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let available_models = vec!["google/gemini-3.7-flash".to_owned()];
+        let selected_model = "google/gemini-3.7-flash";
+        assert!(is_available_catalog_model(
+            selected_model,
+            &available_models
+        ));
+        apply_custom_model(
+            &mut remote_args,
+            Some(selected_model),
+            is_available_catalog_model(selected_model, &available_models),
+        );
+        let model_position = remote_args.iter().position(|arg| arg == "--model").unwrap();
+        assert_eq!(remote_args[model_position + 1], selected_model);
+
+        let mut stale_remote_args = claude_args(AgentMode::Plan, ClaudeModel::Sonnet)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        apply_custom_model(&mut stale_remote_args, Some("provider/model"), false);
+        let model_position = stale_remote_args.iter().position(|arg| arg == "--model").unwrap();
+        assert_eq!(stale_remote_args[model_position + 1], "sonnet");
+    }
+
+    #[test]
     fn older_state_files_get_default_agent_model_and_context_settings() {
         let state: AppState = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
         assert_eq!(state.claude_model, ClaudeModel::Sonnet);
         assert_eq!(state.context_limit, ConversationContextLimit::Last10Turns);
+
+        let state: AppState = serde_json::from_str(
+            r#"{"projects":[{"id":"p","name":"p","path":".","chats":[{"id":"c","title":"c","messages":[]}]}]}"#,
+        )
+        .unwrap();
+        let chat = &state.projects[0].chats[0];
+        assert!(chat.memory_summary.is_empty());
+        assert_eq!(chat.memory_compacted_through, 0);
     }
 
     #[test]
@@ -6553,6 +7465,158 @@ mod tests {
     }
 
     #[test]
+    fn bounded_context_keeps_newest_messages_and_caps_a_single_large_turn() {
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: "old question".to_owned(),
+                attachments: Vec::new(),
+                created_at: Local::now(),
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: "old answer".to_owned(),
+                attachments: Vec::new(),
+                created_at: Local::now(),
+            },
+            Message {
+                role: MessageRole::User,
+                content: "latest".to_owned(),
+                attachments: Vec::new(),
+                created_at: Local::now(),
+            },
+        ];
+        let bounded = bounded_conversation_context(&messages, 40);
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(bounded[0].content, "latest");
+
+        let large = vec![Message {
+            role: MessageRole::User,
+            content: "x".repeat(200),
+            attachments: Vec::new(),
+            created_at: Local::now(),
+        }];
+        assert_eq!(
+            bounded_conversation_context(&large, 40)[0]
+                .content
+                .chars()
+                .count(),
+            8
+        );
+    }
+
+    #[test]
+    fn memory_compaction_waits_for_enough_archived_turns_and_bounds_chunks() {
+        let few_messages = (0..3)
+            .map(|index| Message {
+                role: MessageRole::User,
+                content: format!("question {index}"),
+                attachments: Vec::new(),
+                created_at: Local::now(),
+            })
+            .collect::<Vec<_>>();
+        assert!(!should_compact_memory(&few_messages));
+
+        let old_messages = (0..4)
+            .map(|index| Message {
+                role: MessageRole::User,
+                content: format!("question {index}"),
+                attachments: Vec::new(),
+                created_at: Local::now(),
+            })
+            .collect::<Vec<_>>();
+        assert!(should_compact_memory(&old_messages));
+
+        let long_messages = (0..2)
+            .map(|_| Message {
+                role: MessageRole::Assistant,
+                content: "x".repeat(8_000),
+                attachments: Vec::new(),
+                created_at: Local::now(),
+            })
+            .collect::<Vec<_>>();
+        let chunks = memory_message_chunks(&long_messages);
+        assert!(chunks.len() > 1);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.chars().count() <= MAX_MEMORY_INPUT_CHARS));
+
+        let large_message = vec![Message {
+            role: MessageRole::Assistant,
+            content: "x".repeat(30_000),
+            attachments: Vec::new(),
+            created_at: Local::now(),
+        }];
+        let chunks = memory_message_chunks(&large_message);
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.join("").matches('x').count(), 30_000);
+    }
+
+    #[test]
+    fn local_memory_compaction_is_bounded_and_preserves_chat_history() {
+        let messages = (0..7)
+            .flat_map(|index| {
+                [
+                    Message {
+                        role: MessageRole::User,
+                        content: format!("запит {index}: важлива задача"),
+                        attachments: Vec::new(),
+                        created_at: Local::now(),
+                    },
+                    Message {
+                        role: MessageRole::Assistant,
+                        content: format!("відповідь {index}: рішення"),
+                        attachments: Vec::new(),
+                        created_at: Local::now(),
+                    },
+                ]
+            })
+            .collect::<Vec<_>>();
+        let original_contents = messages
+            .iter()
+            .map(|message| message.content.clone())
+            .collect::<Vec<_>>();
+        let mut state = AppState {
+            context_limit: ConversationContextLimit::Last5Turns,
+            projects: vec![Project {
+                id: "p".to_owned(),
+                name: "p".to_owned(),
+                path: PathBuf::new(),
+                chats: vec![Chat {
+                    id: "c".to_owned(),
+                    title: "c".to_owned(),
+                    messages,
+                    memory_summary: String::new(),
+                    memory_compacted_through: 0,
+                }],
+            }],
+            ..AppState::default()
+        };
+
+        assert_eq!(compact_all_chat_memories_locally(&mut state), (1, 4));
+        let chat = &state.projects[0].chats[0];
+        assert_eq!(chat.memory_compacted_through, 4);
+        assert!(chat.memory_summary.contains("запит 0"));
+        assert!(chat.memory_summary.chars().count() <= MAX_MEMORY_SUMMARY_CHARS);
+        assert_eq!(
+            chat.messages
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>(),
+            original_contents
+        );
+        assert_eq!(compact_all_chat_memories_locally(&mut state), (0, 0));
+    }
+
+    #[test]
+    fn local_memory_excerpt_keeps_both_ends_with_unicode_and_respects_limit() {
+        let excerpt = excerpt_with_ends("Початок важливий. Середина. Кінець теж.", 22);
+        assert!(excerpt.starts_with("Початок"));
+        assert!(excerpt.ends_with("теж."));
+        assert!(excerpt.chars().count() <= 22);
+    }
+
+    #[test]
     fn validates_renamed_chat_titles() {
         assert_eq!(
             normalize_chat_title("  Feature design  ").unwrap(),
@@ -6575,6 +7639,8 @@ mod tests {
                     id: id.to_owned(),
                     title: id.to_owned(),
                     messages: Vec::new(),
+                    memory_summary: String::new(),
+                    memory_compacted_through: 0,
                 })
                 .collect(),
         };
@@ -6600,6 +7666,8 @@ mod tests {
                     attachments: vec![PathBuf::from("image.png")],
                     created_at: Local::now(),
                 }],
+                memory_summary: "old summary".to_owned(),
+                memory_compacted_through: 1,
             }],
         };
 
@@ -6607,6 +7675,8 @@ mod tests {
         assert_eq!(project.chats.len(), 1);
         assert_eq!(project.chats[0].title, "Keep this title");
         assert!(project.chats[0].messages.is_empty());
+        assert!(project.chats[0].memory_summary.is_empty());
+        assert_eq!(project.chats[0].memory_compacted_through, 0);
         assert!(!clear_chat_messages(&mut project, "missing"));
     }
 
@@ -6629,6 +7699,8 @@ mod tests {
                     created_at: Local::now(),
                 },
             ],
+            memory_summary: String::new(),
+            memory_compacted_through: 0,
         };
 
         let export = chat_export_markdown(&chat);
@@ -6650,6 +7722,8 @@ mod tests {
                 id: chat_id.to_owned(),
                 title: chat_id.to_owned(),
                 messages: Vec::new(),
+                memory_summary: String::new(),
+                memory_compacted_through: 0,
             }],
         };
         let mut state = AppState {
@@ -6829,6 +7903,8 @@ mod tests {
             serde_json::from_str(&server.settings_json("http://127.0.0.1:31415", "test-key").unwrap()).unwrap();
         assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "*");
         assert_eq!(settings["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:31415");
+        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "test-key");
+        assert!(settings["env"].get("ANTHROPIC_API_KEY").is_none());
 
         for tool in ["Write", "Bash"] {
             let response = call_approval_hook(
@@ -7042,10 +8118,39 @@ mod tests {
     #[test]
     fn builds_dynamic_mcp_config_correctly() {
         let root = temporary_project();
-        let json_str = build_project_mcp_config(&root, "mcp_server.py", true).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("pyproject.toml"), "").unwrap();
+        let json_str = build_project_mcp_config(
+            "mcp_server.py",
+            true,
+            root.to_string_lossy().as_ref(),
+            true,
+        ).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(parsed["mcpServers"]["decod"]["command"].is_string());
         assert_eq!(parsed["mcpServers"]["decod"]["command"], "python");
+        assert_eq!(parsed["mcpServers"]["designatio"]["args"][0], "-m");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn finds_designatio_preview_manifest_entry() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        let entry = root.join("dist").join("index.html");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, "<h1>Preview</h1>").unwrap();
+        fs::write(
+            root.join("mnemosyne-preview.json"),
+            serde_json::json!({
+                "schema": "1",
+                "preview": {"entry": entry.to_string_lossy().to_string()}
+            }).to_string(),
+        ).unwrap();
+
+        let found = find_designatio_preview_entry(&root).unwrap();
+        assert_eq!(found, entry);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -7076,5 +8181,49 @@ mod tests {
         assert_eq!(models[0], "llama-3.2-3b-instruct");
         assert_eq!(models[1], "deepseek-coder-6.7b");
         assert_eq!(models[2], "qwen2.5-coder-7b");
+    }
+
+    #[test]
+    fn local_model_connection_check_validates_messages_api_and_surfaces_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let read = stream.read(&mut request).unwrap();
+            let body = r#"{"content":[{"type":"text","text":"x"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            String::from_utf8_lossy(&request[..read]).into_owned()
+        });
+
+        test_local_model_round_trip(&format!("http://{address}"), Some("llama-local")).unwrap();
+        assert!(server.join().unwrap().starts_with("POST /v1/messages "));
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            let body = r#"{"error":{"message":"unknown model"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+
+        let error =
+            test_local_model_round_trip(&format!("http://{address}"), Some("missing")).unwrap_err();
+        assert!(error.contains("unknown model"));
+        server.join().unwrap();
     }
 }
