@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](#)
-[![Decod MCP](https://img.shields.io/badge/Decod%20MCP-46%20Tools-purple.svg)](https://github.com/VorwerkUa2/DFM)
+[![Decod MCP](https://img.shields.io/badge/Decod%20MCP-51%20Tools-purple.svg)](https://github.com/VorwerkUa2/DFM)
 [![Release](https://img.shields.io/badge/Release-v0.1.0-brightgreen.svg)](https://github.com/VorwerkUa2/Mnemosyne/releases/tag/v0.1.0)
 [![AI Cost](https://img.shields.io/badge/AI%20Cost-%240%20(FreeLLMAPI)-green.svg)](SETUP_GUIDE.md)
 
@@ -16,7 +16,7 @@
 
 ## 🇺🇦 Українська версія
 
-**Mnemosyne** — це швидкий, нативний десктопний простір (написаний на Rust / `egui`), що об'єднує **Claude Code CLI**, локальний безкоштовний маршрутизатор моделей **FreeLLMAPI** ($0 витрат) та реверс-інжиніринг рушій **Decod** (46 інструментів MCP).
+**Mnemosyne** — це швидкий, нативний десктопний простір (написаний на Rust / `egui`), що об'єднує **Claude Code CLI**, локальний безкоштовний маршрутизатор моделей **FreeLLMAPI** ($0 витрат) та реверс-інжиніринг рушій **Decod** (51 інструмент MCP).
 
 ### ⚡ Швидкий старт
 
@@ -45,7 +45,8 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
 
 - **🤖 Інтеграція Claude Code CLI та FreeLLMAPI ($0)**:
   - Потокова генерація відповіді в реальному часі з відображенням поточного інструмента та можливістю скасування в 1 клік.
-  - Робота через локальний пул **FreeLLMAPI**: безкоштовний кодинг через **Google Gemini API** (1 500 запитів/день) та **Groq Cloud** (14 400 запитів/день).
+  - Список моделей у чаті синхронізується з доступним каталогом **FreeLLMAPI**; можна вибрати конкретний ID або автоматичний fallback.
+  - Усі вибрані моделі працюють через Claude Code CLI та зберігають інструменти агента й Decod MCP; FreeLLMAPI адаптує Anthropic Messages/tool calls до провайдера.
   - Безпечне збереження Unified API Key у захищеному сховищі облікових даних ОС.
   - Вбудовані кнопки перевірки з'єднання та наскрізного тесту запиту до моделі.
 
@@ -58,8 +59,9 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
   - **Принципи Карпатого (Karpathy Rules) + Ponytail**: суворе дотримання YAGNI, мінімум непотрібних абстракцій, захисне програмування та збереження стилю репозиторію.
   - **Кнопка `🔍 Перевірити діагностику`**: миттєва перевірка компілятором (`cargo check` або синтаксис Python) прямо в чаті з **0 витратою токенів**!
   - **Автопровізіонування `.claude/CLAUDE.md`**: автоматичне визначення стеку проєкту (Rust, Python, C/C++, C#, Go, Lua, Web) і генерація індивідуальних правил для моделі.
+  - **Локальна пам’ять чату**: повна історія зберігається на пристрої; звичайне семантичне оновлення підсумку передає архівні повідомлення вибраному API. Для офлайн-стиснення всіх чатів запустіть `Mnemosyne.exe --compact-chat-memory-locally`: буде створено резервну копію `state.json`, а оригінальні повідомлення залишаться незмінними. Локальний конспект є витягом, а не семантичним підсумком.
 
-- **🛠 Повна інтеграція Decod RE-рушія (46 MCP Інструментів)**:
+- **🛠 Повна інтеграція Decod RE-рушія (51 MCP Інструмент)**:
   - Динаміка та хуки пам'яті: Frida dynamic runner, Scylla process dumper, захист від анти-відлагодження (`libstealth.so`).
   - Статика та дизасемблювання: Capstone x86/x64, LIEF аналіз заголовків (PE/ELF/Mach-O), Headless C decompiler.
   - Модинг ігор: розпаковка/пакування контейнерів UE5 PAK/UTOC/UCAS (`repak`), читання та редагування сейвів (`uesave`), конвертація звуку та відео через FFmpeg.
@@ -74,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
 
 ## 🇬🇧 English Version
 
-**Mnemosyne** is a fast, native desktop workspace (built with Rust / `egui`) that seamlessly connects **Claude Code CLI**, a local free AI routing companion **FreeLLMAPI** ($0 cost), and the headless reverse engineering engine **Decod** (46 MCP tools).
+**Mnemosyne** is a fast, native desktop workspace (built with Rust / `egui`) that seamlessly connects **Claude Code CLI**, a local free AI routing companion **FreeLLMAPI** ($0 cost), and the headless reverse engineering engine **Decod** (51 MCP tools).
 
 ### ⚡ Quick Start
 
@@ -103,7 +105,8 @@ The script auto-detects your package manager (`xbps`, `dnf`, `pacman`, `apt`), i
 
 - **🤖 Claude Code CLI & FreeLLMAPI ($0 Cost)**:
   - Real-time streaming output displaying active tool calls with instant 1-click request cancellation.
-  - Local **FreeLLMAPI** connectivity: 100% free coding via **Google Gemini API** (1,500 req/day) and **Groq Cloud** (14,400 req/day).
+  - The chat model list syncs with the available **FreeLLMAPI** catalog; choose a concrete model ID or automatic fallback.
+  - All selected models run through Claude Code CLI and keep agent/Decod MCP tools; FreeLLMAPI translates Anthropic Messages/tool calls for the selected provider.
   - Secure credential storage: Unified API keys are encrypted in the native OS keychain.
   - In-app connection checking and end-to-end ping test buttons.
 
@@ -116,8 +119,9 @@ The script auto-detects your package manager (`xbps`, `dnf`, `pacman`, `apt`), i
   - **Karpathy Rules + Ponytail**: Strictly enforces YAGNI (You Aren't Gonna Need It), minimal abstractions, defensive checks, and repo style matching.
   - **`🔍 Check Diagnostics` Button**: Background compiler checks (`cargo check` or Python syntax) directly from the chat UI with **0 token cost**.
   - **Auto-Provisioned `.claude/CLAUDE.md`**: Detects project tech stack (Rust, Python, C/C++, C#, Go, Lua, Web) and injects tailor-made agent rules.
+  - **Local Chat Memory**: Full chat history is stored on this device; normal semantic summary updates send archived messages to the selected API. For offline compaction of all chats, run `Mnemosyne.exe --compact-chat-memory-locally`: it backs up `state.json` and leaves original messages unchanged. The local note is extractive, not a semantic summary.
 
-- **🛠 Decod Headless Reverse Engineering MCP (46 Tools)**:
+- **🛠 Decod Headless Reverse Engineering MCP (51 Tools)**:
   - Memory dynamics & hooking: Frida dynamic runner, Scylla process memory dumper, anti-anti-debugging (`libstealth.so`).
   - Static disassembly & analysis: Capstone x86/x64, LIEF binary parsing (PE/ELF/Mach-O), Headless C decompiler.
   - Game modding & assets: Unreal Engine 5 PAK/UTOC/UCAS repacking (`repak`), savefile decoding (`uesave`), multimedia conversion via FFmpeg.

@@ -51,12 +51,16 @@ Mnemosyne спроєктовано так, щоб працювати без жо
    - Натисніть кнопку **«Завантажити й встановити FreeLLMAPI»**. Mnemosyne автоматично завантажить офіційний реліз із GitHub (перевіривши SHA-256).
    - Запустіть FreeLLMAPI Dashboard (зазвичай `http://127.0.0.1:31415`).
    - У розділі **Providers** додайте ваші ключі (Gemini, Groq, OpenRouter).
-   - У розділі **Keys $\rightarrow$ Anthropic** встановіть маршрутизацію для сімейств `Sonnet`, `Opus`, `Haiku` на безкоштовний пул (наприклад, Gemini Flash / Llama 3.3).
+   - У розділі **Keys $\rightarrow$ Anthropic** залиште маршрути `Sonnet`, `Opus`, `Haiku` як `auto` для автоматичного вибору й fallback FreeLLMAPI або закріпіть бажану модель.
 3. **Підключення до Mnemosyne**:
    - Скопіюйте Unified API Key із FreeLLMAPI.
    - Вставте його у поле **«Unified API Key»** у налаштуваннях Mnemosyne та натисніть **«Зберегти ключ»** (ключ шифрується у системному сховищі облікових даних ОС).
    - Натисніть **«Перевірити підключення»** $\rightarrow$ з'явиться зелений статус `✓ Підключено`.
    - Натисніть **«Тест запиту»** для перевірки наскрізного пінгу моделі.
+4. **Вибір моделі в чаті**:
+   - Після перевірки з'єднання список моделей у меню чату завантажується з актуального каталогу FreeLLMAPI. Запустіть перевірку ще раз, щоб оновити список після змін каталогу.
+   - Оберіть **Auto (FreeLLMAPI fallback)** для автоматичної маршрутизації або конкретний ID (Gemini та інші моделі). Запит іде через Claude Code / Anthropic Messages, тому інструменти агента й Decod залишаються доступними; FreeLLMAPI перекладає tool calls до вибраного провайдера.
+5. **Помилки маршрутизації**: `rate_limited` / `out_of_credits` означають, що провайдери FreeLLMAPI вичерпали ліміти або квоти; дочекайтеся скидання, додайте ключі чи змініть fallback chain. `context_too_large` вимагає зменшити контекст чату; `model_not_found` — оновити каталог і прибрати застарілу модель із маршруту. Mnemosyne показує детальну помилку провайдера.
 
 ---
 
@@ -71,7 +75,7 @@ Mnemosyne спроєктовано так, щоб працювати без жо
 
 ---
 
-### 4. Підключення RE-рушія Decod (46 Інструментів)
+### 4. Підключення RE-рушія Decod (51 Інструмент)
 
 Decod надає Claude Code повний стек реверс-інжинірингу, компіляторної діагностики та модингу.
 1. У терміналі папки `Decod` виконайте одноразове встановлення залежностей:
@@ -98,6 +102,8 @@ Decod надає Claude Code повний стек реверс-інжиніри
    - Розташована над полем введення. Запускає `cargo check` або перевірку синтаксису Python у фоні **з 0 витратою токенів** і показує статус прямо в чаті.
 5. **Інструменти `inspect_code_structure` та `extract_function_definition`**:
    - Модель зчитує лише сигнатури або окремі функції замість того, щоб завантажувати у контекст файли на тисячі рядків. Економія контексту: **70%–85%**.
+
+**Локальна пам’ять чату**: повна історія та її стислий підсумок зберігаються у даних Mnemosyne на цьому пристрої. Запит до моделі обмежений недавнім контекстом; коли старі повідомлення стискаються, їхній текст надсилається до вибраного API. Це не офлайн-режим.
 
 ---
 
@@ -159,12 +165,16 @@ Mnemosyne connects to free model providers at $0 cost via **FreeLLMAPI**:
    - Click **"Download & install FreeLLMAPI"**. Mnemosyne verifies SHA-256 against official GitHub release metadata and downloads the package.
    - Open FreeLLMAPI Dashboard (`http://127.0.0.1:31415`).
    - Add your free provider keys in the **Providers** tab.
-   - Under **Keys $\rightarrow$ Anthropic**, route `Sonnet`, `Opus`, and `Haiku` to your free models (e.g., Gemini Flash / Llama 3.3).
+   - Under **Keys $\rightarrow$ Anthropic**, leave `Sonnet`, `Opus`, and `Haiku` routes on `auto` for automatic FreeLLMAPI selection/failover, or pin the model you prefer.
 3. **Connect to Mnemosyne**:
    - Copy the Unified API Key from FreeLLMAPI.
    - Paste it into **"Unified API Key"** in Mnemosyne Settings and click **"Save key"** (securely stored in OS credential store).
    - Click **"Check connection"** $\rightarrow$ shows green `✓ Connected`.
    - Click **"Test request"** to verify end-to-end messaging.
+4. **Choose a model in chat**:
+   - After connection verification, the chat menu loads the current FreeLLMAPI model catalog. Run the connection check again to refresh it after catalog changes.
+   - Choose **Auto (FreeLLMAPI fallback)** for automatic routing, or select a concrete model ID (Gemini and others). Requests use Claude Code / Anthropic Messages, so agent and Decod tools remain available; FreeLLMAPI translates tool calls for the selected provider.
+5. **Routing errors**: `rate_limited` / `out_of_credits` mean FreeLLMAPI providers have exhausted their limits or quotas; wait for reset, add keys, or change the fallback chain. `context_too_large` requires reducing chat context; `model_not_found` means refreshing the catalog and removing a stale model from the route. Mnemosyne displays the detailed provider error.
 
 ---
 
@@ -179,7 +189,7 @@ Mnemosyne connects to free model providers at $0 cost via **FreeLLMAPI**:
 
 ---
 
-### 4. Decod MCP Engine Integration (46 Tools)
+### 4. Decod MCP Engine Integration (51 Tools)
 
 Decod provides Claude Code with a comprehensive reverse engineering, diagnostics, and modding toolkit.
 1. In the `Decod` directory, run one-time dependency installation:
@@ -204,6 +214,8 @@ Decod provides Claude Code with a comprehensive reverse engineering, diagnostics
    - Runs `cargo check` or Python syntax verification in the background with **0 token cost**.
 5. **Token Thrift via Decod AST Tools**:
    - Uses `inspect_code_structure` and `extract_function_definition` to avoid loading thousand-line files into the model context (**70%–85% token burn reduction**).
+
+**Local Chat Memory**: The full history and its compact summary are stored in Mnemosyne’s local data. Model requests include bounded recent context; when older messages are compacted, their text is sent to the selected API. This is not an offline mode.
 
 ---
 
