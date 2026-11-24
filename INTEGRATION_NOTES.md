@@ -1,27 +1,27 @@
-# Mnemosyne × Decod — Integration Notes
+# Mnemosyne — Integration Notes
 
-## MCP Config (для claude_command у main.rs)
+## Local model API
 
-Коли `decod_mcp_enabled = true`, треба додати до команди:
-```
---mcp-config {"mcpServers":{"decod":{"command":"python","args":["C:/Users/knyaz/Desktop/Decod/core/mcp_server.py"]}}}
-```
-
-## FreeLLMAPI Endpoints
+LM Studio is the primary model backend. Mnemosyne uses its local Anthropic-compatible API:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/v1/models` | GET | List available models |
-| `/v1/messages` | POST | Send message (streaming) |
+| `/v1/models` | GET | Discover loaded models |
+| `/v1/messages` | POST | Chat and context summarization |
 
-Тест-запит для перевірки з'єднання:
-```json
-{
-  "model": "claude-sonnet-4-5",
-  "max_tokens": 1,
-  "messages": [{"role":"user","content":"ping"}]
-}
+Default base URL: `http://127.0.0.1:1234`. Ollama is an optional local alternative at `http://127.0.0.1:11434` when its version supports both routes.
+
+## MCP Config
+
+When enabled, Decod and Designatio MCP servers are added to the Claude Code CLI session:
+
 ```
+--mcp-config {"mcpServers":{"decod":{"command":"python3","args":["<Decod>/core/mcp_server.py"]},"designatio":{"command":"python3","args":["-m","designatio.mcp.server"],"cwd":"<Designatio>"}}}
+```
+
+On Windows the configured Python command is `python`; on Linux it is `python3`. Mnemosyne resolves the module directories from platform-specific Desktop/home folders and also permits explicit paths in Settings. The personal Figma token, when configured, is passed only to Designatio's process environment.
+
+Designatio's local JSON mockup import does not require a Figma token.
 
 ## Claude Code CLI paths
 

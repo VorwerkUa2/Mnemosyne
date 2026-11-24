@@ -38,29 +38,19 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
 
 ---
 
-### 2. Налаштування FreeLLMAPI (100% Безкоштовний ШІ)
+### 2. Підключення локальної моделі (LM Studio)
 
-Mnemosyne спроєктовано так, щоб працювати без жодних витрат ($0) через маршрутизатор **FreeLLMAPI**:
+Mnemosyne використовує **LM Studio як основний рушій** через локальний Anthropic-compatible API. Запити чату залишаються на вашому пристрої; зовнішній API-ключ не потрібен. Обчислювальні ресурси та електроенергія залежать від обраної моделі й обладнання.
 
-1. **Отримайте безкоштовні API-ключі**:
-   - **Google Gemini API**: Перейдіть на [Google AI Studio](https://aistudio.google.com/) $\rightarrow$ створіть безкоштовний API ключ (ліміт: **1 500 запитів на добу**, 15 RPM).
-   - **Groq Cloud (Llama 3.3 70B)**: Перейдіть на [Groq Console](https://console.groq.com/) $\rightarrow$ створіть ключ (ліміт: **14 400 запитів на добу**, 30 RPM).
-   - **OpenRouter (Free tier)**: Створіть безкоштовний ключ на [OpenRouter](https://openrouter.ai/).
-2. **Встановлення FreeLLMAPI**:
-   - Відкрийте Mnemosyne $\rightarrow$ перейдіть у **⚙ Налаштування**.
-   - Натисніть кнопку **«Завантажити й встановити FreeLLMAPI»**. Mnemosyne автоматично завантажить офіційний реліз із GitHub (перевіривши SHA-256).
-   - Запустіть FreeLLMAPI Dashboard (зазвичай `http://127.0.0.1:31415`).
-   - У розділі **Providers** додайте ваші ключі (Gemini, Groq, OpenRouter).
-   - У розділі **Keys $\rightarrow$ Anthropic** залиште маршрути `Sonnet`, `Opus`, `Haiku` як `auto` для автоматичного вибору й fallback FreeLLMAPI або закріпіть бажану модель.
-3. **Підключення до Mnemosyne**:
-   - Скопіюйте Unified API Key із FreeLLMAPI.
-   - Вставте його у поле **«Unified API Key»** у налаштуваннях Mnemosyne та натисніть **«Зберегти ключ»** (ключ шифрується у системному сховищі облікових даних ОС).
-   - Натисніть **«Перевірити підключення»** $\rightarrow$ з'явиться зелений статус `✓ Підключено`.
-   - Натисніть **«Тест запиту»** для перевірки наскрізного пінгу моделі.
-4. **Вибір моделі в чаті**:
-   - Після перевірки з'єднання список моделей у меню чату завантажується з актуального каталогу FreeLLMAPI. Запустіть перевірку ще раз, щоб оновити список після змін каталогу.
-   - Оберіть **Auto (FreeLLMAPI fallback)** для автоматичної маршрутизації або конкретний ID (Gemini та інші моделі). Запит іде через Claude Code / Anthropic Messages, тому інструменти агента й Decod залишаються доступними; FreeLLMAPI перекладає tool calls до вибраного провайдера.
-5. **Помилки маршрутизації**: `rate_limited` / `out_of_credits` означають, що провайдери FreeLLMAPI вичерпали ліміти або квоти; дочекайтеся скидання, додайте ключі чи змініть fallback chain. `context_too_large` вимагає зменшити контекст чату; `model_not_found` — оновити каталог і прибрати застарілу модель із маршруту. Mnemosyne показує детальну помилку провайдера.
+1. Встановіть [LM Studio](https://lmstudio.ai/) для Windows або Linux і завантажте модель, що підтримує роботу з інструментами.
+2. У LM Studio відкрийте локальний сервер, увімкніть Anthropic-compatible API та запустіть його на типовій адресі `http://127.0.0.1:1234`.
+3. Запустіть Mnemosyne. Програма автоматично перевірить сервер і завантажені моделі; статус та вибір моделі доступні в **⚙ Налаштуваннях** і у верхній панелі чату.
+4. Якщо сервер має іншу адресу, змініть її в налаштуваннях і натисніть **«Перевірити API та знайти моделі»**. Щоб перейти на іншу модель, спершу завантажте її в LM Studio, а потім виберіть у списку Mnemosyne.
+5. **Ollama** можна використовувати як необов'язкову локальну альтернативу на `http://127.0.0.1:11434`, якщо її версія підтримує маршрути `/v1/models` і Anthropic `/v1/messages`.
+
+Для кодування також потрібен **Claude Code CLI** (див. наступний розділ). Якість та швидкість залежать від розміру моделі, підтримки виклику інструментів і доступних RAM/VRAM.
+
+**Локальні чати й пам’ять агента** зберігаються у `state.json`: `%LOCALAPPDATA%\Mnemosyne\state.json` на Windows або `~/.local/share/Mnemosyne/state.json` на Linux. Повна історія залишається на пристрої; у запит потрапляє обмежений контекст, за замовчуванням — останні 10 ходів користувача й не більше 48 000 символів історії. Старі повідомлення підсумовуються локальною моделлю в окрему пам’ять чату (до 8 000 символів). Для кожного проєкту також зберігається граф сутностей і зв’язків: він періодично витягується локальною моделлю, додається до контексту агента й переглядається в чаті. Офлайн-команда `--compact-chat-memory-locally` створює витяг без API, але не видаляє оригінальну історію.
 
 ---
 
@@ -75,12 +65,16 @@ Mnemosyne спроєктовано так, щоб працювати без жо
 
 ---
 
-### 4. Підключення RE-рушія Decod (51 Інструмент)
+### 4. Підключення RE-рушія Decod (58 Інструментів)
 
 Decod надає Claude Code повний стек реверс-інжинірингу, компіляторної діагностики та модингу.
 1. У терміналі папки `Decod` виконайте одноразове встановлення залежностей:
    ```bash
+   # Windows
    python setup_decod.py --install-all
+
+   # Linux
+   python3 setup_decod.py --install-all
    ```
    Це автоматично встановить `frida`, `lief`, `capstone`, `psutil`, `pyright`, `rust-analyzer`, завантажить портативні `repak.exe` та `uesave.exe`, та збілдить `libstealth.so` на Linux.
 2. У **Налаштуваннях Mnemosyne** переконайтеся, що прапорець **«Увімкнути Decod MCP»** увімкнено (за замовчуванням увімкнено).
@@ -88,7 +82,17 @@ Decod надає Claude Code повний стек реверс-інжиніри
 
 ---
 
-### 5. Суперсили кодингу (Vibe-Coding)
+### 5. Підключення Designatio MCP
+
+Designatio додає до агента аналіз макетів, генерацію дизайн-систем і текстур, перевірки адаптивності та доступності, а також реалізацію web/native UI.
+
+1. Встановіть залежності в папці Designatio:
+   - Windows: `.\install.ps1`
+   - Linux: `./install.sh`
+2. У **Налаштуваннях Mnemosyne** перевірте шлях до папки Designatio та стан Designatio MCP.
+3. Figma token необов'язковий: він потрібен лише функціям, що читають Figma API. Локальний JSON-макет можна імпортувати без токена.
+
+### 6. Суперсили кодингу (Vibe-Coding)
 
 У Mnemosyne реалізовано комплекс суперсил для швидкого кодингу без переплат:
 
@@ -103,18 +107,18 @@ Decod надає Claude Code повний стек реверс-інжиніри
 5. **Інструменти `inspect_code_structure` та `extract_function_definition`**:
    - Модель зчитує лише сигнатури або окремі функції замість того, щоб завантажувати у контекст файли на тисячі рядків. Економія контексту: **70%–85%**.
 
-**Локальна пам’ять чату**: повна історія та її стислий підсумок зберігаються у даних Mnemosyne на цьому пристрої. Запит до моделі обмежений недавнім контекстом; коли старі повідомлення стискаються, їхній текст надсилається до вибраного API. Це не офлайн-режим.
+**Локальна пам’ять чату та граф знань**: повна історія, підсумок і граф сутностей/зв’язків для кожного проєкту зберігаються у `state.json` на цьому пристрої. Граф періодично створюється локальною моделлю, додається до контексту агента та доступний для перегляду в чаті. Для оновлення підсумку й графа потрібен доступ до налаштованого локального API.
 
 ---
 
-### 6. Оновлення компонентів в 1 клік
+### 7. Оновлення компонентів в 1 клік
 
 У розділі **Налаштування $\rightarrow$ Оновлення та обслуговування** натисніть:
 **«Оновити всі компоненти зараз»**.
 Програма у фоновому режимі оновить:
 - Claude Code CLI (`npm update -g @anthropic-ai/claude-code`)
 - Decod RE рушій (`git pull origin main`)
-- Бібліотеки Python (`pip install --upgrade frida lief capstone psutil pyright`)
+- Бібліотеки Python (`python -m pip install --upgrade frida lief capstone psutil pyright` на Windows; `python3 -m pip ...` на Linux)
 
 ---
 ---
@@ -152,29 +156,19 @@ The installer automatically:
 
 ---
 
-### 2. FreeLLMAPI Configuration (100% Free AI)
+### 2. Connect a Local Model (LM Studio)
 
-Mnemosyne connects to free model providers at $0 cost via **FreeLLMAPI**:
+Mnemosyne uses **LM Studio as its primary model engine** through the local Anthropic-compatible API. Chat requests stay on your machine, and no external API key is required. Compute and electricity costs depend on the selected model and hardware.
 
-1. **Obtain Free API Keys**:
-   - **Google Gemini API**: Visit [Google AI Studio](https://aistudio.google.com/) $\rightarrow$ generate a free API key (**1,500 requests/day**, 15 RPM).
-   - **Groq Cloud (Llama 3.3 70B)**: Visit [Groq Console](https://console.groq.com/) $\rightarrow$ generate a free key (**14,400 requests/day**, 30 RPM).
-   - **OpenRouter Free Tier**: Generate a key on [OpenRouter](https://openrouter.ai/).
-2. **Install FreeLLMAPI**:
-   - Open Mnemosyne $\rightarrow$ navigate to **⚙ Settings**.
-   - Click **"Download & install FreeLLMAPI"**. Mnemosyne verifies SHA-256 against official GitHub release metadata and downloads the package.
-   - Open FreeLLMAPI Dashboard (`http://127.0.0.1:31415`).
-   - Add your free provider keys in the **Providers** tab.
-   - Under **Keys $\rightarrow$ Anthropic**, leave `Sonnet`, `Opus`, and `Haiku` routes on `auto` for automatic FreeLLMAPI selection/failover, or pin the model you prefer.
-3. **Connect to Mnemosyne**:
-   - Copy the Unified API Key from FreeLLMAPI.
-   - Paste it into **"Unified API Key"** in Mnemosyne Settings and click **"Save key"** (securely stored in OS credential store).
-   - Click **"Check connection"** $\rightarrow$ shows green `✓ Connected`.
-   - Click **"Test request"** to verify end-to-end messaging.
-4. **Choose a model in chat**:
-   - After connection verification, the chat menu loads the current FreeLLMAPI model catalog. Run the connection check again to refresh it after catalog changes.
-   - Choose **Auto (FreeLLMAPI fallback)** for automatic routing, or select a concrete model ID (Gemini and others). Requests use Claude Code / Anthropic Messages, so agent and Decod tools remain available; FreeLLMAPI translates tool calls for the selected provider.
-5. **Routing errors**: `rate_limited` / `out_of_credits` mean FreeLLMAPI providers have exhausted their limits or quotas; wait for reset, add keys, or change the fallback chain. `context_too_large` requires reducing chat context; `model_not_found` means refreshing the catalog and removing a stale model from the route. Mnemosyne displays the detailed provider error.
+1. Install [LM Studio](https://lmstudio.ai/) for Windows or Linux and download a model that supports tool use.
+2. In LM Studio, open the local server, enable its Anthropic-compatible API, and start it at the default `http://127.0.0.1:1234` address.
+3. Start Mnemosyne. It checks the server and loaded models automatically; connection status and model selection are available in **⚙ Settings** and the chat toolbar.
+4. If the server uses another address, update it in Settings and click **"Verify API & discover models"**. To switch models, load the model in LM Studio first, then select it in Mnemosyne.
+5. **Ollama** is an optional local alternative at `http://127.0.0.1:11434` when its version supports Mnemosyne's `/v1/models` and Anthropic `/v1/messages` routes.
+
+**Claude Code CLI** is also required for coding tasks (see the next section). Quality and speed depend on model size, tool-calling support, and available RAM/VRAM.
+
+**Local chats and agent memory** are stored in `state.json`: `%LOCALAPPDATA%\Mnemosyne\state.json` on Windows or `~/.local/share/Mnemosyne/state.json` on Linux. Full history remains on the device; prompts use bounded context, defaulting to the last 10 user turns and at most 48,000 history characters. Older messages are summarized by the local model into a per-chat memory (up to 8,000 characters). Each project also stores a graph of entities and relationships, periodically extracted by the local model, included in agent context, and viewable in chat. The offline `--compact-chat-memory-locally` command creates an extractive note without an API call, but does not delete the original history.
 
 ---
 
@@ -189,12 +183,16 @@ Mnemosyne connects to free model providers at $0 cost via **FreeLLMAPI**:
 
 ---
 
-### 4. Decod MCP Engine Integration (51 Tools)
+### 4. Decod MCP Engine Integration (58 Tools)
 
 Decod provides Claude Code with a comprehensive reverse engineering, diagnostics, and modding toolkit.
 1. In the `Decod` directory, run one-time dependency installation:
    ```bash
+   # Windows
    python setup_decod.py --install-all
+
+   # Linux
+   python3 setup_decod.py --install-all
    ```
    This installs `frida`, `lief`, `capstone`, `psutil`, `pyright`, `rust-analyzer`, downloads `repak` and `uesave`, and builds `libstealth.so` on Linux.
 2. In **Mnemosyne Settings**, ensure **"Enable Decod MCP"** is checked (enabled by default).
@@ -202,7 +200,17 @@ Decod provides Claude Code with a comprehensive reverse engineering, diagnostics
 
 ---
 
-### 5. Vibe-Coding Superpowers
+### 5. Connect Designatio MCP
+
+Designatio adds mockup analysis, design-system and texture generation, responsive/accessibility checks, and web/native UI implementation.
+
+1. Install dependencies from the Designatio directory:
+   - Windows: `.\install.ps1`
+   - Linux: `./install.sh`
+2. In **Mnemosyne Settings**, verify the Designatio directory and MCP status.
+3. A Figma token is optional and only needed for features that access the Figma API. Local JSON mockup import works without one.
+
+### 6. Vibe-Coding Superpowers
 
 1. **Caveman Mode (30–40% Token Savings)**:
    - Eliminates fluff, greetings, and pleasantries. Direct code diffs only.
@@ -215,13 +223,13 @@ Decod provides Claude Code with a comprehensive reverse engineering, diagnostics
 5. **Token Thrift via Decod AST Tools**:
    - Uses `inspect_code_structure` and `extract_function_definition` to avoid loading thousand-line files into the model context (**70%–85% token burn reduction**).
 
-**Local Chat Memory**: The full history and its compact summary are stored in Mnemosyne’s local data. Model requests include bounded recent context; when older messages are compacted, their text is sent to the selected API. This is not an offline mode.
+**Local chat memory and knowledge graph**: Full history, summaries, and a per-project entity/relationship graph are stored in `state.json` on this device. The graph is periodically created by the local model, included in agent context, and viewable in chat. Updating summaries and the graph requires access to the configured local API.
 
 ---
 
-### 6. One-Click Updates & Maintenance
+### 7. One-Click Updates & Maintenance
 
 In **Settings $\rightarrow$ Updates & Maintenance**, click **"Update All Components Now"** to update:
 - Claude Code CLI (`npm update -g @anthropic-ai/claude-code`)
 - Decod RE engine (`git pull origin main`)
-- Python packages (`pip install --upgrade frida lief capstone psutil pyright`)
+- Python packages (`python -m pip install --upgrade frida lief capstone psutil pyright` on Windows; `python3 -m pip ...` on Linux)

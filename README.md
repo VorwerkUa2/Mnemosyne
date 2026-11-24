@@ -6,9 +6,9 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](#)
-[![Decod MCP](https://img.shields.io/badge/Decod%20MCP-51%20Tools-purple.svg)](https://github.com/VorwerkUa2/DFM)
+[![Decod MCP](https://img.shields.io/badge/Decod%20MCP-58%20Tools-purple.svg)](https://github.com/VorwerkUa2/DFM)
 [![Release](https://img.shields.io/badge/Release-v0.1.0-brightgreen.svg)](https://github.com/VorwerkUa2/Mnemosyne/releases/tag/v0.1.0)
-[![AI Cost](https://img.shields.io/badge/AI%20Cost-%240%20(FreeLLMAPI)-green.svg)](SETUP_GUIDE.md)
+[![AI Engine](https://img.shields.io/badge/AI%20Engine-LM%20Studio-blue.svg)](SETUP_GUIDE.md)
 
 [**🇺🇦 Українська версія**](#-українська-версія) | [**🇬🇧 English Version**](#-english-version)
 
@@ -16,7 +16,7 @@
 
 ## 🇺🇦 Українська версія
 
-**Mnemosyne** — це швидкий, нативний десктопний простір (написаний на Rust / `egui`), що об'єднує **Claude Code CLI**, локальний безкоштовний маршрутизатор моделей **FreeLLMAPI** ($0 витрат) та реверс-інжиніринг рушій **Decod** (51 інструмент MCP).
+**Mnemosyne** — це кросплатформна оболонка агента для локального **LM Studio** (через Anthropic-compatible API), **Claude Code CLI** та двох MCP-модулів: **Decod** для розробки й аналізу та **Designatio** для дизайну й реалізації макетів. **Ollama** залишається необов'язковою локальною альтернативою.
 
 ### ⚡ Швидкий старт
 
@@ -42,13 +42,13 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
   - **Компактні налаштування зі слайдером**: зручний вертикальний скрол, фіксована ширина (450px) без перекриття робочого простору.
   - **Повна двомовність**: Українська 🇺🇦 та Англійська 🇬🇧 на льоту.
   - **Вбудований переглядач**: перегляд Markdown із рендерингом таблиць, списків завдань, підсвічування тексту та перегляд зображень (PNG, JPEG, GIF, WebP, BMP).
+  - **Дії з повідомленнями**: контекстне меню ПКМ для копіювання, редагування запиту та перегенерації у новій гілці. Центроване підтвердження окремо пропонує відкотити відстежені зміни `Write`/`Edit`; файл не перезаписується, якщо після відповіді його змінено.
 
-- **🤖 Інтеграція Claude Code CLI та FreeLLMAPI ($0)**:
+- **🤖 Локальний AI через LM Studio**:
   - Потокова генерація відповіді в реальному часі з відображенням поточного інструмента та можливістю скасування в 1 клік.
-  - Список моделей у чаті синхронізується з доступним каталогом **FreeLLMAPI**; можна вибрати конкретний ID або автоматичний fallback.
-  - Усі вибрані моделі працюють через Claude Code CLI та зберігають інструменти агента й Decod MCP; FreeLLMAPI адаптує Anthropic Messages/tool calls до провайдера.
-  - Безпечне збереження Unified API Key у захищеному сховищі облікових даних ОС.
-  - Вбудовані кнопки перевірки з'єднання та наскрізного тесту запиту до моделі.
+  - Mnemosyne автоматично перевіряє `http://127.0.0.1:1234` під час запуску, знаходить завантажені моделі та дозволяє вибрати модель для чату.
+  - Усі запити йдуть до локального API; підписка на зовнішній API не потрібна. LM Studio має бути запущений із завантаженою моделлю та Anthropic-compatible API.
+  - Ollama можна підключити як локальну альтернативу, якщо потрібні маршрути `/v1/models` і `/v1/messages`.
 
 - **🛡 Безпека та Режими агента**:
   - **📋 План (Plan Mode)**: Тільки читання (`Read`, `Glob`, `Grep`). Зміни файлів заблоковані.
@@ -59,9 +59,9 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
   - **Принципи Карпатого (Karpathy Rules) + Ponytail**: суворе дотримання YAGNI, мінімум непотрібних абстракцій, захисне програмування та збереження стилю репозиторію.
   - **Кнопка `🔍 Перевірити діагностику`**: миттєва перевірка компілятором (`cargo check` або синтаксис Python) прямо в чаті з **0 витратою токенів**!
   - **Автопровізіонування `.claude/CLAUDE.md`**: автоматичне визначення стеку проєкту (Rust, Python, C/C++, C#, Go, Lua, Web) і генерація індивідуальних правил для моделі.
-  - **Локальна пам’ять чату**: повна історія зберігається на пристрої; звичайне семантичне оновлення підсумку передає архівні повідомлення вибраному API. Для офлайн-стиснення всіх чатів запустіть `Mnemosyne.exe --compact-chat-memory-locally`: буде створено резервну копію `state.json`, а оригінальні повідомлення залишаться незмінними. Локальний конспект є витягом, а не семантичним підсумком.
+  - **Локальна пам’ять чату та граф знань**: повна історія, підсумки й окремий для кожного проєкту граф сутностей і зв’язків зберігаються на пристрої у `state.json`. Граф періодично витягується локальною моделлю, додається до контексту агента й переглядається в інтерфейсі. Для офлайн-стиснення всіх чатів запустіть `Mnemosyne.exe --compact-chat-memory-locally`: буде створено резервну копію `state.json`, а оригінальні повідомлення залишаться незмінними.
 
-- **🛠 Повна інтеграція Decod RE-рушія (51 MCP Інструмент)**:
+- **🛠 Повна інтеграція Decod RE-рушія (58 MCP Інструментів)**:
   - Динаміка та хуки пам'яті: Frida dynamic runner, Scylla process dumper, захист від анти-відлагодження (`libstealth.so`).
   - Статика та дизасемблювання: Capstone x86/x64, LIEF аналіз заголовків (PE/ELF/Mach-O), Headless C decompiler.
   - Модинг ігор: розпаковка/пакування контейнерів UE5 PAK/UTOC/UCAS (`repak`), читання та редагування сейвів (`uesave`), конвертація звуку та відео через FFmpeg.
@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
 
 ## 🇬🇧 English Version
 
-**Mnemosyne** is a fast, native desktop workspace (built with Rust / `egui`) that seamlessly connects **Claude Code CLI**, a local free AI routing companion **FreeLLMAPI** ($0 cost), and the headless reverse engineering engine **Decod** (51 MCP tools).
+**Mnemosyne** is a cross-platform agent host for local **LM Studio** (via its Anthropic-compatible API), **Claude Code CLI**, and two MCP modules: **Decod** for development and analysis, and **Designatio** for design and mockup implementation. **Ollama** remains an optional local alternative.
 
 ### ⚡ Quick Start
 
@@ -104,13 +104,13 @@ The script auto-detects your package manager (`xbps`, `dnf`, `pacman`, `apt`), i
   - **Compact Settings Window with Slider**: Smooth vertical scroll area (`ScrollArea::vertical()`), bounded 450px width preventing workspace overflow.
   - **Full Bilingual Support**: Instant switching between Ukrainian 🇺🇦 and English 🇬🇧.
   - **Built-in Document & Image Viewer**: Markdown parser with tables, task lists, and syntax blocks; image viewer for PNG, JPEG, GIF, WebP, BMP.
+  - **Message actions**: right-click to copy, edit a prompt, or regenerate in a new branch. A centered confirmation dialog optionally reverts tracked `Write`/`Edit` changes and refuses to overwrite files changed since the response.
 
-- **🤖 Claude Code CLI & FreeLLMAPI ($0 Cost)**:
+- **🤖 Local AI with LM Studio**:
   - Real-time streaming output displaying active tool calls with instant 1-click request cancellation.
-  - The chat model list syncs with the available **FreeLLMAPI** catalog; choose a concrete model ID or automatic fallback.
-  - All selected models run through Claude Code CLI and keep agent/Decod MCP tools; FreeLLMAPI translates Anthropic Messages/tool calls for the selected provider.
-  - Secure credential storage: Unified API keys are encrypted in the native OS keychain.
-  - In-app connection checking and end-to-end ping test buttons.
+  - Mnemosyne checks `http://127.0.0.1:1234` on startup, discovers loaded models, and lets you select one in chat.
+  - All requests go to the local API; no external model API subscription is required. LM Studio must be running with a model loaded and its Anthropic-compatible API enabled.
+  - Ollama can be used as an optional local alternative with `/v1/models` and `/v1/messages` routes.
 
 - **🛡 Safety & Agent Modes**:
   - **📋 Plan Mode**: Read-only operations (`Read`, `Glob`, `Grep`). All file modifications are strictly blocked.
@@ -121,9 +121,9 @@ The script auto-detects your package manager (`xbps`, `dnf`, `pacman`, `apt`), i
   - **Karpathy Rules + Ponytail**: Strictly enforces YAGNI (You Aren't Gonna Need It), minimal abstractions, defensive checks, and repo style matching.
   - **`🔍 Check Diagnostics` Button**: Background compiler checks (`cargo check` or Python syntax) directly from the chat UI with **0 token cost**.
   - **Auto-Provisioned `.claude/CLAUDE.md`**: Detects project tech stack (Rust, Python, C/C++, C#, Go, Lua, Web) and injects tailor-made agent rules.
-  - **Local Chat Memory**: Full chat history is stored on this device; normal semantic summary updates send archived messages to the selected API. For offline compaction of all chats, run `Mnemosyne.exe --compact-chat-memory-locally`: it backs up `state.json` and leaves original messages unchanged. The local note is extractive, not a semantic summary.
+  - **Local Chat Memory & Knowledge Graph**: Full history, summaries, and a per-project graph of entities and relationships are stored on this device in `state.json`. The graph is periodically extracted by the local model, included in agent context, and viewable in the UI. For offline compaction of all chats, run `Mnemosyne.exe --compact-chat-memory-locally`: it backs up `state.json` and leaves original messages unchanged.
 
-- **🛠 Decod Headless Reverse Engineering MCP (51 Tools)**:
+- **🛠 Decod Headless Reverse Engineering MCP (58 Tools)**:
   - Memory dynamics & hooking: Frida dynamic runner, Scylla process memory dumper, anti-anti-debugging (`libstealth.so`).
   - Static disassembly & analysis: Capstone x86/x64, LIEF binary parsing (PE/ELF/Mach-O), Headless C decompiler.
   - Game modding & assets: Unreal Engine 5 PAK/UTOC/UCAS repacking (`repak`), savefile decoding (`uesave`), multimedia conversion via FFmpeg.
@@ -151,7 +151,7 @@ cargo run
 # Build optimized release / Збірка релізу
 cargo build --release
 
-# Run unit tests / Запуск тестів (all 37 tests passing)
+# Run unit tests / Запуск тестів
 cargo test
 ```
 
