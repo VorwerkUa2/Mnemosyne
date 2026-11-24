@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 const KEYRING_SERVICE: &str = "Mnemosyne";
 const FREELLMAPI_KEY_NAME: &str = "freellmapi-unified-key";
+const DESIGNATIO_FIGMA_KEY_NAME: &str = "designatio-figma-token";
 const MAX_COMPANION_DOWNLOAD_BYTES: u64 = 200 * 1024 * 1024;
 const FREELLMAPI_RELEASES_API: &str =
     "https://api.github.com/repos/tashfeenahmed/freellmapi/releases/latest";
@@ -123,6 +124,11 @@ struct L {
     pub designatio_enable: &'static str,
     pub designatio_path: &'static str,
     pub designatio_check: &'static str,
+    pub designatio_figma_token: &'static str,
+    pub designatio_figma_token_hint: &'static str,
+    pub designatio_figma_token_save: &'static str,
+    pub designatio_figma_token_remove: &'static str,
+    pub designatio_figma_token_saved: &'static str,
     pub model_section: &'static str,
     pub mode_section: &'static str,
     pub mode_plan: &'static str,
@@ -222,6 +228,11 @@ const UK: L = L {
     designatio_enable: "Увімкнути Designatio MCP",
     designatio_path: "Шлях до папки Designatio",
     designatio_check: "Перевірити",
+    designatio_figma_token: "Особистий Figma API token (необов'язково)",
+    designatio_figma_token_hint: "Токен зберігається у сховищі ОС і передається лише Designatio MCP. JSON-макети працюють без нього.",
+    designatio_figma_token_save: "Зберегти токен",
+    designatio_figma_token_remove: "Видалити токен",
+    designatio_figma_token_saved: "✓ Особистий Figma token збережено у сховищі ОС",
     model_section: "Модель Claude",
     mode_section: "Режим агента",
     mode_plan: "📋 Планування (тільки читання)",
@@ -315,6 +326,11 @@ const EN: L = L {
     designatio_enable: "Enable Designatio MCP",
     designatio_path: "Designatio directory",
     designatio_check: "Verify",
+    designatio_figma_token: "Personal Figma API token (optional)",
+    designatio_figma_token_hint: "Stored in the OS credential store and passed only to Designatio MCP. Local JSON imports need no token.",
+    designatio_figma_token_save: "Save token",
+    designatio_figma_token_remove: "Remove token",
+    designatio_figma_token_saved: "✓ Personal Figma token is stored in the OS credential store",
     model_section: "Claude Model",
     mode_section: "Agent mode",
     mode_plan: "📋 Plan (read-only)",
@@ -715,6 +731,9 @@ struct MnemosyneApp {
     loading_plugins: bool,
     plugin_action_running: bool,
     freellmapi_key_draft: String,
+    designatio_figma_token_draft: String,
+    designatio_figma_token_saved: bool,
+    designatio_figma_token_status: Option<String>,
     checking_provider: bool,
     checking_local_model: bool,
     installing_companion: bool,
@@ -780,6 +799,11 @@ impl MnemosyneApp {
             Ok(state) => (state, None),
             Err(error) => (AppState::default(), Some(error)),
         };
+        let (designatio_figma_token_saved, designatio_figma_token_status) =
+            match load_designatio_figma_token_from_keyring() {
+                Ok(token) => (token.is_some(), None),
+                Err(error) => (false, Some(error)),
+            };
         Self {
             state,
             draft: String::new(),
@@ -803,6 +827,9 @@ impl MnemosyneApp {
             loading_plugins: false,
             plugin_action_running: false,
             freellmapi_key_draft: String::new(),
+            designatio_figma_token_draft: String::new(),
+            designatio_figma_token_saved,
+            designatio_figma_token_status,
             checking_provider: false,
             checking_local_model: false,
             installing_companion: false,
@@ -1400,6 +1427,17 @@ impl MnemosyneApp {
         let approval_tx = self.approval_tx.clone();
         let active_child = Arc::clone(&self.active_child);
         let cancel_requested = Arc::clone(&self.cancel_requested);
+        let figma_token = if self.state.designatio_mcp_enabled {
+            match load_designatio_figma_token() {
+                Ok(token) => token,
+                Err(error) => {
+                    self.designatio_figma_token_status = Some(error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let summary_model = custom_model
             .clone()
             .unwrap_or_else(|| "claude-sonnet-4-5".to_owned());
@@ -1416,6 +1454,7 @@ impl MnemosyneApp {
             self.state.decod_mcp_enabled,
             &self.state.designatio_mcp_path,
             self.state.designatio_mcp_enabled,
+            figma_token.as_deref(),
         );
         thread::spawn(move || {
             let compact_memory_now = should_compact_memory(&pending_memory);
@@ -1500,6 +1539,28 @@ impl MnemosyneApp {
                     Some("Ключ FreeLLMAPI збережено у сховищі облікових даних системи.".to_owned());
             }
             Err(error) => self.status = Some(error),
+        }
+    }
+
+    fn save_designatio_figma_token(&mut self) {
+        match save_designatio_figma_token(self.designatio_figma_token_draft.trim()) {
+            Ok(()) => {
+                self.designatio_figma_token_draft.clear();
+                self.designatio_figma_token_saved = true;
+                self.designatio_figma_token_status = None;
+            }
+            Err(error) => self.designatio_figma_token_status = Some(error),
+        }
+    }
+
+    fn remove_designatio_figma_token(&mut self) {
+        match remove_designatio_figma_token() {
+            Ok(()) => {
+                self.designatio_figma_token_draft.clear();
+                self.designatio_figma_token_saved = false;
+                self.designatio_figma_token_status = None;
+            }
+            Err(error) => self.designatio_figma_token_status = Some(error),
         }
     }
 
@@ -3788,6 +3849,36 @@ impl eframe::App for MnemosyneApp {
                         };
                         ui.colored_label(color, status);
                     }
+                    ui.add_space(6.0);
+                    ui.label(l.designatio_figma_token);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.designatio_figma_token_draft)
+                            .password(true)
+                            .hint_text("figd_…"),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button(l.designatio_figma_token_save).clicked() {
+                            self.save_designatio_figma_token();
+                        }
+                        if ui
+                            .add_enabled(
+                                self.designatio_figma_token_saved,
+                                egui::Button::new(l.designatio_figma_token_remove),
+                            )
+                            .clicked()
+                        {
+                            self.remove_designatio_figma_token();
+                        }
+                    });
+                    if let Some(status) = &self.designatio_figma_token_status {
+                        ui.colored_label(egui::Color32::LIGHT_RED, status);
+                    } else if self.designatio_figma_token_saved {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_GREEN,
+                            l.designatio_figma_token_saved,
+                        );
+                    }
+                    ui.weak(l.designatio_figma_token_hint);
 
                     // ── Superpowers & Vibe-Coding ─────────────────────────────
                     ui.add_space(12.0);
@@ -5293,6 +5384,21 @@ impl Drop for TempFileGuard {
     }
 }
 
+fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("Не вдалося створити захищений MCP конфіг: {error}"))?;
+    file.write_all(contents)
+        .map_err(|error| format!("Не вдалося записати MCP конфіг: {error}"))
+}
+
 fn run_claude(
     project_path: &Path,
     messages: &[Message],
@@ -5447,8 +5553,7 @@ fn run_claude(
     let mcp_file_guard = if let Some(mcp_json) = &mcp_config {
         let path = std::env::temp_dir().join(format!("mnemosyne-mcp-{}.json", Uuid::new_v4()));
         let guard = TempFileGuard(path.clone());
-        fs::write(&path, mcp_json)
-            .map_err(|error| format!("Не вдалося записати конфігурацію Decod MCP: {error}"))?;
+        write_private_file(&path, mcp_json.as_bytes())?;
         command.arg("--mcp-config").arg(&path);
         Some(guard)
     } else {
@@ -5813,6 +5918,57 @@ fn load_freellmapi_key() -> Result<Option<String>, String> {
         Err(error) => Err(format!(
             "Не вдалося прочитати ключ FreeLLMAPI зі сховища: {error}"
         )),
+    }
+}
+
+fn designatio_figma_token_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, DESIGNATIO_FIGMA_KEY_NAME)
+        .map_err(|error| format!("Не вдалося відкрити системне сховище токенів: {error}"))
+}
+
+fn load_designatio_figma_token_from_keyring() -> Result<Option<String>, String> {
+    match designatio_figma_token_entry()?.get_password() {
+        Ok(token) if !token.trim().is_empty() => Ok(Some(token.trim().to_owned())),
+        Ok(_) => Ok(None),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!(
+            "Не вдалося прочитати Figma token зі сховища: {error}"
+        )),
+    }
+}
+
+fn load_designatio_figma_token() -> Result<Option<String>, String> {
+    match load_designatio_figma_token_from_keyring() {
+        Ok(Some(token)) => return Ok(Some(token)),
+        Ok(None) => {}
+        Err(keyring_error) => {
+            return match std::env::var("FIGMA_TOKEN") {
+                Ok(token) if !token.trim().is_empty() => Ok(Some(token.trim().to_owned())),
+                Ok(_) | Err(std::env::VarError::NotPresent) => Err(keyring_error),
+                Err(error) => Err(format!("{keyring_error}; не вдалося прочитати FIGMA_TOKEN: {error}")),
+            };
+        }
+    }
+    match std::env::var("FIGMA_TOKEN") {
+        Ok(token) if !token.trim().is_empty() => Ok(Some(token.trim().to_owned())),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("Не вдалося прочитати FIGMA_TOKEN: {error}")),
+    }
+}
+
+fn save_designatio_figma_token(token: &str) -> Result<(), String> {
+    if token.is_empty() {
+        return Err("Введіть особистий Figma API token.".to_owned());
+    }
+    designatio_figma_token_entry()?
+        .set_password(token)
+        .map_err(|error| format!("Не вдалося зберегти Figma token у сховищі: {error}"))
+}
+
+fn remove_designatio_figma_token() -> Result<(), String> {
+    match designatio_figma_token_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("Не вдалося видалити Figma token зі сховища: {error}")),
     }
 }
 
@@ -7089,6 +7245,7 @@ fn build_project_mcp_config(
     decod_enabled: bool,
     designatio_path: &str,
     designatio_enabled: bool,
+    figma_token: Option<&str>,
 ) -> Option<String> {
     let mut servers = serde_json::Map::new();
     let python_command = if cfg!(windows) { "python" } else { "python3" };
@@ -7105,14 +7262,15 @@ fn build_project_mcp_config(
 
     let designatio_dir = PathBuf::from(designatio_path);
     if designatio_enabled && designatio_dir.join("pyproject.toml").exists() {
-        servers.insert(
-            "designatio".to_string(),
-            serde_json::json!({
-                "command": python_command,
-                "args": ["-m", "designatio.mcp.server"],
-                "cwd": designatio_dir.to_string_lossy().to_string()
-            }),
-        );
+        let mut server = serde_json::json!({
+            "command": python_command,
+            "args": ["-m", "designatio.mcp.server"],
+            "cwd": designatio_dir.to_string_lossy().to_string()
+        });
+        if let Some(token) = figma_token.filter(|token| !token.trim().is_empty()) {
+            server["env"] = serde_json::json!({"FIGMA_TOKEN": token});
+        }
+        servers.insert("designatio".to_string(), server);
     }
 
     if servers.is_empty() {
@@ -8125,11 +8283,46 @@ mod tests {
             true,
             root.to_string_lossy().as_ref(),
             true,
+            Some("test-figma-token"),
         ).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(parsed["mcpServers"]["decod"]["command"].is_string());
         assert_eq!(parsed["mcpServers"]["decod"]["command"], "python");
         assert_eq!(parsed["mcpServers"]["designatio"]["args"][0], "-m");
+        assert_eq!(
+            parsed["mcpServers"]["designatio"]["env"]["FIGMA_TOKEN"],
+            "test-figma-token"
+        );
+
+        let config_without_token = build_project_mcp_config(
+            "mcp_server.py",
+            false,
+            root.to_string_lossy().as_ref(),
+            true,
+            None,
+        )
+        .unwrap();
+        let parsed_without_token: serde_json::Value =
+            serde_json::from_str(&config_without_token).unwrap();
+        assert!(parsed_without_token["mcpServers"]["designatio"].get("env").is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn writes_mcp_config_with_private_permissions() {
+        let root = temporary_project();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("mcp.json");
+        write_private_file(&path, b"{\"mcpServers\":{}}").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "{\"mcpServers\":{}}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 

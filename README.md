@@ -67,6 +67,8 @@ curl -fsSL https://raw.githubusercontent.com/VorwerkUa2/Mnemosyne/main/install.s
   - Модинг ігор: розпаковка/пакування контейнерів UE5 PAK/UTOC/UCAS (`repak`), читання та редагування сейвів (`uesave`), конвертація звуку та відео через FFmpeg.
   - Code Intelligence: аналіз AST структури (`inspect_code_structure`) та точкове вилучення функцій (`extract_function_definition`), що знижує жор токенів на **70%–85%**.
 
+- **🎨 Designatio MCP**: універсальні інструменти дизайну та реалізації макетів. Увімкніть інтеграцію і вкажіть папку Designatio в налаштуваннях; особистий Figma token зберігається у сховищі облікових даних ОС і передається лише Designatio MCP. Імпорт локального JSON-макета працює без токена.
+
 - **🔄 Оновлення та обслуговування в 1 клік**:
   - Оновлення Claude Code CLI (`npm update -g @anthropic-ai/claude-code`).
   - Оновлення RE-рушія Decod (`git pull origin main`).
@@ -126,6 +128,8 @@ The script auto-detects your package manager (`xbps`, `dnf`, `pacman`, `apt`), i
   - Static disassembly & analysis: Capstone x86/x64, LIEF binary parsing (PE/ELF/Mach-O), Headless C decompiler.
   - Game modding & assets: Unreal Engine 5 PAK/UTOC/UCAS repacking (`repak`), savefile decoding (`uesave`), multimedia conversion via FFmpeg.
   - Code Intelligence: AST structure outline (`inspect_code_structure`) and surgical single-function extraction (`extract_function_definition`), saving **70%–85% token burn**.
+
+- **🎨 Designatio MCP**: universal design and mockup implementation tools. Enable it and set the Designatio directory in Settings; your personal Figma token is stored in the OS credential store and passed only to Designatio MCP. Local JSON mockup imports work without a token.
 
 - **🔄 1-Click Updates & Maintenance**:
   - Updates Claude Code CLI (`npm update -g @anthropic-ai/claude-code`).
